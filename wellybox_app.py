@@ -768,41 +768,54 @@ class Bot:
         return None
 
     def _hover_tooltip(self, card) -> tuple:
-        """Hover over a card and read the dark popup that shows ספק and date.
-        Returns (vendor, date_str) — either may be empty string on failure."""
+        """Hover over a card and read vendor/date from the UserWay accessibility
+        panel (role=region, aria-label='Quick Accessibility Options', class=uw-sl)
+        that WellyBox populates with structured card data on hover.
+        Falls back to the dark MUI overlay if the panel is absent.
+        Returns (vendor, date_str) — either may be empty string."""
         from selenium.webdriver.common.action_chains import ActionChains
         vendor = ""
         date_str = ""
         try:
-            # Scroll card into view, then hover
             self.driver.execute_script(
                 "arguments[0].scrollIntoView({block:'center'});", card)
             time.sleep(0.3)
             ActionChains(self.driver).move_to_element(card).perform()
-            time.sleep(1.0)   # wait for dark overlay to appear
+            time.sleep(1.2)   # allow UserWay panel to refresh for this card
 
-            # The popup is a dark overlay inside the card or a MUI portal near it.
-            # Try to find any newly-visible element containing "ספק:"
             tooltip_text = self.driver.execute_script("""
-                var card = arguments[0];
-                function findWithLabel(root) {
-                    var els = root.querySelectorAll('*');
+                // ── Primary: UserWay accessibility panel ──────────────────────
+                // Matches: role=region + aria-label contains "Quick Accessibility"
+                //          OR any element with class containing "uw-sl"
+                var uwSels = [
+                    '[role="region"][aria-label*="Quick Accessibility"]',
+                    '[role="region"].uw-sl',
+                    '.uw-sl[role="region"]',
+                    '.uw-sl'
+                ];
+                for (var s = 0; s < uwSels.length; s++) {
+                    var els = document.querySelectorAll(uwSels[s]);
                     for (var i = 0; i < els.length; i++) {
-                        var el = els[i];
-                        if (!el.offsetParent) continue;
-                        var txt = (el.innerText || el.textContent || '').trim();
-                        if (txt.includes('\u05e1\u05e4\u05e7') && txt.includes('\u05ea\u05d0\u05e8\u05d9\u05da'))
+                        // Use textContent (not innerText) so hidden text is included
+                        var txt = (els[i].textContent || '').trim();
+                        if (txt.length > 5 && txt.includes('\u05e1\u05e4\u05e7'))
                             return txt;
                     }
-                    return null;
                 }
-                // 1. inside the card itself
-                var t = findWithLabel(card);
-                if (t) return t;
-                // 2. MUI portals / tooltips appended to body
+
+                // ── Fallback: dark MUI overlay inside or near the card ────────
+                var card = arguments[0];
+                var all = card.querySelectorAll('*');
+                for (var i = 0; i < all.length; i++) {
+                    var el = all[i];
+                    if (!el.offsetParent) continue;
+                    var txt = (el.innerText || el.textContent || '').trim();
+                    if (txt.includes('\u05e1\u05e4\u05e7') && txt.includes('\u05ea\u05d0\u05e8\u05d9\u05da'))
+                        return txt;
+                }
                 var portals = document.querySelectorAll(
-                    '[class*="tooltip" i],[class*="Tooltip"],[class*="overlay" i],' +
-                    '[class*="Overlay"],[class*="popover" i],[class*="Popover"],' +
+                    '[class*="tooltip" i],[class*="Tooltip"],' +
+                    '[class*="overlay" i],[class*="Overlay"],' +
                     '[role="tooltip"],[data-popper-placement]');
                 for (var i = 0; i < portals.length; i++) {
                     var el = portals[i];
@@ -814,28 +827,27 @@ class Bot:
             """, card)
 
             if tooltip_text:
-                self._emit(f"  tooltip raw: {repr(tooltip_text[:120])}")
-                # Normalize: insert newline before each field label so the
-                # parser works regardless of whether the tooltip rendered with
-                # newlines (innerText) or without them (textContent fallback).
+                self._emit(f"  uw raw: {repr(tooltip_text[:150])}")
+                # Normalize: insert \n before every known field label so that
+                # parsing is consistent regardless of whitespace in the source.
                 _FIELD = (r'(?:ספק|סך\s*הכל|סה[״"]\s*כ|תאריך[^:\n]{0,30}?'
                           r'|עסק|קטגוריה|מספר[^:\n]{0,20}?'
                           r'|סטטוס|מקור|מטבע|הערה|שולח)\s*:')
-                tooltip_norm = re.sub(
-                    r'(?<!\n)(?=' + _FIELD + r')', '\n', tooltip_text
-                ).strip()
-                # Extract vendor — stops at newline (i.e. at the next field)
-                m = re.search(r'ספק\s*:?\s*([^\n]+)', tooltip_norm)
+                norm = re.sub(r'(?<!\n)(?=' + _FIELD + r')', '\n',
+                              tooltip_text).strip()
+
+                m = re.search(r'ספק\s*:?\s*([^\n]+)', norm)
                 if m:
                     vendor = m.group(1).strip()
-                # Extract document date — prefer תאריך ע״ג המסמך / תאריך ע"ג המסמך
-                m = re.search(r'תאריך\s+ע[״"]\s*ג\s+המסמך\s*:?\s*([^\n]+)', tooltip_norm)
+
+                # Prefer exact field name; fall back to first תאריך line
+                m = re.search(r'תאריך\s+ע[״"]\s*ג\s+המסמך\s*:?\s*([^\n]+)', norm)
                 if not m:
-                    m = re.search(r'תאריך[^\n:]*:\s*([^\n]+)', tooltip_norm)
+                    m = re.search(r'תאריך[^\n:]*:\s*([^\n]+)', norm)
                 if m:
                     date_str = m.group(1).strip()
             else:
-                self._emit("  tooltip לא נמצא", "WARN")
+                self._emit("  uw panel לא נמצא", "WARN")
         except Exception as e:
             self._emit(f"  שגיאת hover: {e}", "WARN")
         return vendor, date_str
