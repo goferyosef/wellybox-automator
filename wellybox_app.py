@@ -260,24 +260,37 @@ class Bot:
             self._login(u, p)
             if self.stop_event.is_set():
                 return
-            # Stage 1 — invoices
-            self._emit("══════ שלב 1: חשבוניות ══════")
-            self._go_to_all_receipts()
-            self._apply_filter(check=["חשבונית", "חשבונית מס /קבלה"],
-                               uncheck=["קבלה"])
-            self._sort_by_date()
-            self._process_stage(self.output_folder / "חשבוניות לקליטה",
-                                INVOICE_TYPES, "חשבונית")
+
+            # Transfer browser session to requests
+            session = self._build_session()
+
+            # Fetch all docs in range via REST API
+            self._emit("══════ שולף מסמכים מה-API ══════")
+            all_docs = self._fetch_docs(session)
+            self._emit(f"נמצאו {len(all_docs)} מסמכים בטווח התאריכים")
             if self.stop_event.is_set():
                 return
+
+            # Split by doc_type
+            invoice_docs = [d for d in all_docs
+                            if d.get('doc_type') in ('invoice', 'invoice_receipt')]
+            receipt_docs = [d for d in all_docs
+                            if d.get('doc_type') == 'receipt']
+
+            # Stage 1 — invoices
+            self._emit(f"══════ שלב 1: חשבוניות ({len(invoice_docs)}) ══════")
+            self._process_docs(invoice_docs,
+                               self.output_folder / "חשבוניות לקליטה",
+                               "חשבונית", session)
+            if self.stop_event.is_set():
+                return
+
             # Stage 2 — receipts
-            self._emit("══════ שלב 2: קבלות ══════")
-            self._go_to_all_receipts()
-            self._apply_filter(check=["קבלה"],
-                               uncheck=["חשבונית", "חשבונית מס /קבלה"])
-            self._sort_by_date()
-            self._process_stage(self.output_folder / "קבלות",
-                                RECEIPT_TYPES, "קבלה")
+            self._emit(f"══════ שלב 2: קבלות ({len(receipt_docs)}) ══════")
+            self._process_docs(receipt_docs,
+                               self.output_folder / "קבלות",
+                               "קבלה", session)
+
             self._logout()
             self._save_reports()
             self._emit("✓ סיום בהצלחה")
@@ -446,851 +459,147 @@ class Bot:
             raise RuntimeError("כניסה נכשלה — בדוק פרטי כניסה")
         time.sleep(2)
 
-    # ── navigate ──────────────────────────────────────────────────────────────
-    def _go_to_all_receipts(self):
-        self._emit("עובר ל'כל החשבוניות'…")
-        try:
-            el = self._w(WAIT_L).until(EC.element_to_be_clickable((
-                By.XPATH, "//*[normalize-space(text())='כל החשבוניות']"
-            )))
-            self.driver.execute_script("arguments[0].click();", el)
-            self._emit("  ✓ כל החשבוניות")
-        except TimeoutException:
-            self._emit("  'כל החשבוניות' לא נמצא", "WARN")
-        # wait for skeletons to disappear
-        try:
-            self._w(60).until_not(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiSkeleton-root"))
+    # ── API session ───────────────────────────────────────────────────────────
+    def _build_session(self):
+        import requests
+        session = requests.Session()
+        for cookie in self.driver.get_cookies():
+            session.cookies.set(
+                cookie['name'], cookie['value'],
+                domain=cookie.get('domain', '').lstrip('.')
             )
-        except TimeoutException:
-            pass
-        time.sleep(1.5)
-        # Clear any active filters before proceeding
-        self._clear_filters()
+        session.headers.update({
+            'User-Agent': self.driver.execute_script('return navigator.userAgent'),
+            'Referer': 'https://app.wellybox.com/',
+            'Origin': 'https://app.wellybox.com',
+        })
+        self._emit("  ✓ העברתי session ל-requests")
+        return session
 
-    def _clear_filters(self):
-        try:
-            el = WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable((
-                By.XPATH, "//*[normalize-space(text())='נקה מסננים']"
-            )))
-            self.driver.execute_script("arguments[0].click();", el)
-            self._emit("  ✓ נקה מסננים")
-            time.sleep(1)
-        except TimeoutException:
-            pass  # no active filters — nothing to clear
-
-    # ── sort ──────────────────────────────────────────────────────────────────
-    def _sort_by_date(self):
-        """Sort the card list by document date, newest first.
-        Tries the WellyBox sort dropdown; falls back to column-header click."""
-        self._emit("ממיין לפי תאריך (חדש לישן)…")
-
-        # Discover all visible sort-related controls for diagnosis
-        candidates = self.driver.execute_script("""
-            var out = [];
-            var all = document.querySelectorAll(
-                'button,[role="button"],[role="option"],[role="menuitem"],' +
-                'th,[role="columnheader"],[class*="sort"],[class*="Sort"]');
-            for (var i = 0; i < all.length; i++) {
-                var el = all[i];
-                if (!el.offsetParent) continue;
-                var txt = (el.innerText || el.textContent || '').trim();
-                if (!txt) continue;
-                if (txt.includes('\u05de\u05d9\u05d9\u05df') ||   // מיין
-                    txt.includes('\u05e1\u05d3\u05e8') ||          // סדר
-                    txt.includes('\u05ea\u05d0\u05e8\u05d9\u05da') || // תאריך
-                    txt.toLowerCase().includes('sort') ||
-                    txt.toLowerCase().includes('date'))
-                    out.push(txt.substring(0, 60));
-            }
-            return out;
-        """) or []
-        self._emit(f"  בקרי מיון שנמצאו: {candidates}")
-
-        # Strategy 1 — click "מיין" or sort dropdown, then pick date option
-        for sort_label in ["מיין לפי", "מיין", "סדר לפי", "Sort"]:
-            if self._js_click_text(sort_label, wait=4):
-                time.sleep(0.8)
-                # Now click the date option in the opened dropdown
-                for date_label in [
-                    'תאריך ע״ג המסמך', 'תאריך ע"ג המסמך',
-                    "תאריך המסמך", "תאריך", "Date",
-                ]:
-                    if self._js_click_text(date_label, wait=4):
-                        time.sleep(0.5)
-                        # Second click may be needed to switch to descending
-                        self._js_click_text(date_label, wait=3)
-                        self._emit("  ✓ ממוין לפי תאריך")
-                        time.sleep(2)
-                        try:
-                            self._w(20).until_not(
-                                EC.presence_of_element_located(
-                                    (By.CSS_SELECTOR, ".MuiSkeleton-root")))
-                        except TimeoutException:
-                            pass
-                        time.sleep(1)
-                        return
-                break  # dropdown opened but date option not found
-
-        # Strategy 2 — click a date column/sort header directly
-        for xp in [
-            "//*[@role='columnheader' and contains(.,'תאריך')]",
-            "//th[contains(.,'תאריך')]",
-            "//*[contains(@class,'sort') and contains(.,'תאריך')]",
-            "//*[contains(@class,'Sort') and contains(.,'תאריך')]",
-        ]:
-            try:
-                els = self.driver.find_elements(By.XPATH, xp)
-                for el in els:
-                    if el.is_displayed():
-                        self.driver.execute_script("arguments[0].click();", el)
-                        time.sleep(0.5)
-                        self.driver.execute_script("arguments[0].click();", el)
-                        self._emit("  ✓ ממוין לפי תאריך (כותרת עמודה)")
-                        time.sleep(2)
-                        return
-            except Exception:
-                pass
-
-        self._emit("  לא הצלחתי למיין — ממשיך ללא מיון", "WARN")
-
-    # ── filter ────────────────────────────────────────────────────────────────
-    def _apply_filter(self, check: list, uncheck: list):
-        self._emit(f"פילטר: {', '.join(check)}")
-
-        # Open "מסננים נוספים"
-        if not self._js_click_text("מסננים נוספים", wait=WAIT_L):
-            raise RuntimeError("'מסננים נוספים' לא נמצא")
-        time.sleep(1)
-
-        # Open "סוג מסמך"
-        if not self._js_click_text("סוג מסמך", wait=WAIT_S):
-            raise RuntimeError("'סוג מסמך' לא נמצא")
-        time.sleep(1)
-
-        # Set checkboxes
-        for label in check:
-            self._set_checkbox(label, True)
-        for label in uncheck:
-            self._set_checkbox(label, False)
-
-        time.sleep(0.8)
-        self._shot("after_checkboxes")   # verify both boxes are ticked before clicking החל
-
-        # Click "החל"
-        if not self._click_any("החל"):
-            self._shot("error_no_apply")
-            # Log all visible buttons for diagnosis
-            btns = self.driver.find_elements(By.XPATH, "//button")
-            visible = [b.text.strip() for b in btns if b.is_displayed() and b.text.strip()]
-            self._emit(f"  כפתורים נראים: {visible}", "WARN")
-            raise RuntimeError("כפתור 'החל' לא נמצא")
-
-        self._emit("  ✓ פילטר הוחל")
-        # Wait for filter panel to fully close, then for results to load
-        time.sleep(2)
-        # Wait until the filter panel / dropdown is gone
-        try:
-            self._w(10).until_not(
-                EC.presence_of_element_located(
-                    (By.XPATH, "//*[contains(normalize-space(text()),'סוג מסמך') and @role!='menuitem']"
-                               "[ancestor::*[contains(@class,'filter') or contains(@class,'Filter') "
-                               "or contains(@class,'drawer') or contains(@class,'Drawer') "
-                               "or contains(@class,'popover') or contains(@class,'Popover')]]")
-                )
-            )
-        except TimeoutException:
-            pass
-        time.sleep(1.5)
-        try:
-            self._w(30).until_not(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".MuiSkeleton-root"))
-            )
-        except TimeoutException:
-            pass
-        time.sleep(1.5)
-
-    def _js_click_text(self, text: str, wait: int = WAIT_S) -> bool:
-        try:
-            el = WebDriverWait(self.driver, wait).until(
-                EC.element_to_be_clickable((By.XPATH, f"//*[normalize-space(text())='{text}']"))
-            )
-            self.driver.execute_script("arguments[0].click();", el)
-            self._emit(f"  לחץ: '{text}'")
-            return True
-        except TimeoutException:
-            return False
-
-    def _click_any(self, text: str) -> bool:
-        for xp in [
-            f"//*[normalize-space(text())='{text}']",
-            f"//button[contains(.,'{text}')]",
-            f"//*[contains(.,'{text}')][self::button or self::a]",
-            f"//*[contains(.,'{text}') and (contains(@class,'btn') or contains(@class,'Btn'))]",
-        ]:
-            try:
-                for el in self.driver.find_elements(By.XPATH, xp):
-                    if el.is_displayed() and el.is_enabled():
-                        self.driver.execute_script("arguments[0].click();", el)
-                        self._emit(f"  לחץ: '{text}'")
-                        return True
-            except Exception:
-                pass
-        return False
-
-    def _set_checkbox(self, label: str, want_checked: bool):
-        """Find a filter checkbox by exact label text and set its checked state."""
-        # Build variants to try (normalise spaces around slash)
-        variants = [label]
-        if "/" in label:
-            variants.append(re.sub(r'\s*/\s*', ' / ', label))
-            variants.append(re.sub(r'\s*/\s*', '/', label))
-
-        for lv in variants:
-            lv_js = lv.replace("'", "\\'")
-            result = self.driver.execute_script(f"""
-                var target = '{lv_js}';
-                var want   = {'true' if want_checked else 'false'};
-                // Walk all visible elements looking for exact text match
-                var all = document.querySelectorAll('label, li, span, div');
-                for (var i = 0; i < all.length; i++) {{
-                    var el = all[i];
-                    if (!el.offsetParent) continue;          // skip hidden
-                    var txt = el.textContent.trim();
-                    if (txt !== target) continue;            // EXACT match only
-                    // Find the associated checkbox
-                    var cb = el.querySelector('input[type="checkbox"]');
-                    if (!cb) {{
-                        var p = el.parentElement;
-                        for (var k = 0; k < 4 && p; k++) {{
-                            cb = p.querySelector('input[type="checkbox"]');
-                            if (cb) break;
-                            p = p.parentElement;
-                        }}
-                    }}
-                    if (cb) {{
-                        if (cb.checked === want) return 'already';
-                        cb.click();
-                        return 'clicked_cb';
-                    }}
-                    // No input found — click the label element itself
-                    el.click();
-                    return 'clicked_el';
-                }}
-                return null;
-            """)
-
-            if result:
-                state = "✓" if want_checked else "✗"
-                note  = " (כבר במצב הנכון)" if result == "already" else ""
-                self._emit(f"  {state} '{lv}'{note}")
-                time.sleep(0.4)
-                return
-
-        if want_checked:
-            self._emit(f"  '{label}' לא נמצא בפילטר", "WARN")
-
-    # ── card processing ───────────────────────────────────────────────────────
-    def _scroll_card_list(self) -> bool:
-        """Scroll the card list container down to trigger batch loading.
-        Returns True if the scroll position actually changed (more content may load)."""
-        return self.driver.execute_script("""
-            var el = document.querySelector('.wbgvbct_receipts_list');
-            if (!el) return false;
-            var before = el.scrollTop;
-            el.scrollBy(0, el.clientHeight * 0.85);
-            return el.scrollTop > before;
-        """) or False
-
-    def _card_key(self, card) -> str:
-        """Stable dedup key: text content + DOM position to survive identical-text duplicates."""
-        try:
-            txt = card.text.strip()[:80]
-            loc = card.location  # {'x': ..., 'y': ...}
-            return f"{txt}|{loc.get('x',0)},{loc.get('y',0)}"
-        except Exception:
-            return ""
-
-    def _process_stage(self, dest_folder: Path, expected_types: list, stage_name: str):
-        dest_folder.mkdir(parents=True, exist_ok=True)
-
-        seen_keys: set = set()   # keys of cards already handled (or skipped)
-        global_idx = 0           # monotonic card counter
-        out_of_range_streak = 0  # consecutive cards older than cutoff → stop
-        no_new_cards_streak = 0  # consecutive scrolls with nothing new → stop
-        first_fetch = True
-
+    # ── fetch all docs via REST API ────────────────────────────────────────────
+    def _fetch_docs(self, session) -> list:
+        import json
+        API_URL = "https://api.app.wellybox.com/api/v1/docs2"
+        all_docs = []
+        page = 1
         while True:
             if self.stop_event.is_set():
                 break
-
-            # Re-fetch card references every iteration — DOM may have changed
-            cards = self._find_cards()
-            if first_fetch:
-                self._emit(f"נמצאו {len(cards)} כרטיסים בטעינה ראשונה")
-                first_fetch = False
-
-            # Find the FIRST card we haven't handled yet
-            card = None
-            card_key = None
-            for c in cards:
-                k = self._card_key(c)
-                if k not in seen_keys:
-                    card = c
-                    card_key = k
-                    break
-
-            if card is None:
-                # All visible cards handled — try scrolling for more
-                scrolled = self._scroll_card_list()
-                if not scrolled:
-                    break
-                no_new_cards_streak += 1
-                if no_new_cards_streak >= 3:
-                    break
-                time.sleep(1.5)
-                continue
-
-            no_new_cards_streak = 0
-            seen_keys.add(card_key)   # mark before processing to prevent re-entry
-            global_idx += 1
-            card_num = global_idx
-
-            try:
-                text = card.text.strip()
-
-                # Log status for diagnosis but do NOT skip based on it.
-                # WellyBox marks every AI-processed document "נשמר" on arrival —
-                # that is unrelated to whether our app has downloaded it yet.
-                _status = "נשמר" if "נשמר" in text else ("חדש" if "חדש" in text else "?")
-                _lines  = [l.strip() for l in text.split('\n')
-                           if l.strip() and l.strip() not in ('נשמר', 'חדש')]
-                _hint   = _lines[0][:40] if _lines else ''
-                self._emit(f"  #{card_num}: {_status} ({_hint})")
-
-                card_date = self._date_from_text(text)
-                if card_date is None:
-                    self._emit(f"  #{card_num}: תאריך לא נקרא — דלג", "WARN")
-                    continue
-
-                if card_date < self._cutoff:
-                    self._emit(f"  #{card_num}: {card_date.strftime('%d/%m/%Y')} — מחוץ לטווח")
-                    out_of_range_streak += 1
-                    if out_of_range_streak >= 10:
-                        self._emit("10 כרטיסים רצופים מחוץ לטווח — עוצר גלילה")
-                        return
-                    continue
-
-                out_of_range_streak = 0
-
-                self._emit(f"פותח #{card_num} ({card_date.strftime('%d/%m/%Y')})…")
-                result = CardResult(idx=card_num, doc_date=fmt_date_il(card_date))
-                self._open_process(card, result, dest_folder, expected_types, stage_name)
-                self.results.append(result)
-
-                self._close_card()
-                time.sleep(0.5)
-
-            except StaleElementReferenceException:
-                # Card element went stale — it will be re-fetched next iteration
-                self._emit(f"  #{card_num}: stale element — מרענן", "WARN")
-                seen_keys.discard(card_key)   # allow retry with fresh reference
-            except Exception as exc:
-                self._emit(f"  #{card_num}: שגיאה — {exc}", "ERROR")
-                r = CardResult(idx=card_num, status="error", note=str(exc))
-                self.results.append(r)
-                self._close_card()
-                time.sleep(0.5)
-
-        self._emit(f"שלב '{stage_name}' הסתיים")
-
-    def _find_cards(self) -> list:
-        return self.driver.execute_script("""
-            var STATUS = ['חדש','נשמר'];
-            var container = document.querySelector('.wbgvbct_receipts_list') || document.body;
-            var seen = new Set(), cards = [];
-            var all = container.querySelectorAll('*');
-            for (var i = 0; i < all.length; i++) {
-                var node = all[i];
-                // Strip invisible/zero-width chars before comparing
-                var t = (node.innerText || node.textContent || '').trim()
-                         .replace(/[\u200b\u200c\u200d\uFEFF\u00a0]/g, '');
-                if (!STATUS.includes(t)) continue;
-                // Walk up to find a card-sized ancestor
-                var anc = node.parentElement;
-                for (var j = 0; j < 15; j++) {
-                    if (!anc || anc === document.body) break;
-                    var w = anc.offsetWidth, h = anc.offsetHeight;
-                    if (w > 120 && w < window.innerWidth * 0.7 && h > 80 && h < 750) {
-                        var key = Math.round(anc.getBoundingClientRect().top) + '|' + anc.offsetLeft;
-                        if (!seen.has(key)) { seen.add(key); cards.push(anc); }
-                        break;
-                    }
-                    anc = anc.parentElement;
-                }
+            docs_filter = json.dumps({
+                "sort_by": "source_date",
+                "sort_dir": "desc",
+                "page": page,
+                "page_size": 60,
+            })
+            params = {
+                "docs_filter": docs_filter,
+                "cver": "2.4.1",
+                "intent": "screen",
+                "ff": "desktop",
+                "culture": "he_IL",
             }
-            return cards;
-        """) or []
-
-    def _date_from_text(self, text: str) -> Optional[datetime]:
-        lines = [l.strip() for l in text.split('\n') if l.strip()]
-        for line in reversed(lines[-5:]):
-            dt = parse_date(line)
-            if dt:
-                return dt
-        for line in lines:
-            dt = parse_date(line)
-            if dt:
-                return dt
-        return None
-
-    def _hover_tooltip(self, card) -> tuple:
-        """Hover over a card and read vendor/date from the UserWay accessibility
-        panel (role=region, aria-label='Quick Accessibility Options', class=uw-sl)
-        that WellyBox populates with structured card data on hover.
-        Falls back to the dark MUI overlay if the panel is absent.
-        Returns (vendor, date_str) — either may be empty string."""
-        from selenium.webdriver.common.action_chains import ActionChains
-        vendor = ""
-        date_str = ""
-        try:
-            self.driver.execute_script(
-                "arguments[0].scrollIntoView({block:'center'});", card)
-            time.sleep(0.3)
-            ActionChains(self.driver).move_to_element(card).perform()
-            time.sleep(1.2)   # allow UserWay panel to refresh for this card
-
-            tooltip_text = self.driver.execute_script("""
-                // ── Primary: UserWay accessibility panel ──────────────────────
-                // Matches: role=region + aria-label contains "Quick Accessibility"
-                //          OR any element with class containing "uw-sl"
-                var uwSels = [
-                    '[role="region"][aria-label*="Quick Accessibility"]',
-                    '[role="region"].uw-sl',
-                    '.uw-sl[role="region"]',
-                    '.uw-sl'
-                ];
-                for (var s = 0; s < uwSels.length; s++) {
-                    var els = document.querySelectorAll(uwSels[s]);
-                    for (var i = 0; i < els.length; i++) {
-                        // Use textContent (not innerText) so hidden text is included
-                        var txt = (els[i].textContent || '').trim();
-                        if (txt.length > 5 && txt.includes('\u05e1\u05e4\u05e7'))
-                            return txt;
-                    }
-                }
-
-                // ── Fallback: dark MUI overlay inside or near the card ────────
-                var card = arguments[0];
-                var all = card.querySelectorAll('*');
-                for (var i = 0; i < all.length; i++) {
-                    var el = all[i];
-                    if (!el.offsetParent) continue;
-                    var txt = (el.innerText || el.textContent || '').trim();
-                    if (txt.includes('\u05e1\u05e4\u05e7') && txt.includes('\u05ea\u05d0\u05e8\u05d9\u05da'))
-                        return txt;
-                }
-                var portals = document.querySelectorAll(
-                    '[class*="tooltip" i],[class*="Tooltip"],' +
-                    '[class*="overlay" i],[class*="Overlay"],' +
-                    '[role="tooltip"],[data-popper-placement]');
-                for (var i = 0; i < portals.length; i++) {
-                    var el = portals[i];
-                    if (!el.offsetParent) continue;
-                    var txt = (el.innerText || el.textContent || '').trim();
-                    if (txt.includes('\u05e1\u05e4\u05e7')) return txt;
-                }
-                return null;
-            """, card)
-
-            if tooltip_text:
-                self._emit(f"  uw raw: {repr(tooltip_text[:150])}")
-                # Normalize: insert \n before every known field label so that
-                # parsing is consistent regardless of whitespace in the source.
-                _FIELD = (r'(?:ספק|סך\s*הכל|סה[״"]\s*כ|תאריך[^:\n]{0,30}?'
-                          r'|עסק|קטגוריה|מספר[^:\n]{0,20}?'
-                          r'|סטטוס|מקור|מטבע|הערה|שולח)\s*:')
-                norm = re.sub(r'(?<!\n)(?=' + _FIELD + r')', '\n',
-                              tooltip_text).strip()
-
-                m = re.search(r'ספק\s*:?\s*([^\n]+)', norm)
-                if m:
-                    vendor = m.group(1).strip()
-
-                # Prefer exact field name; fall back to first תאריך line
-                m = re.search(r'תאריך\s+ע[״"]\s*ג\s+המסמך\s*:?\s*([^\n]+)', norm)
-                if not m:
-                    m = re.search(r'תאריך[^\n:]*:\s*([^\n]+)', norm)
-                if m:
-                    date_str = m.group(1).strip()
-            else:
-                self._emit("  uw panel לא נמצא", "WARN")
-        except Exception as e:
-            self._emit(f"  שגיאת hover: {e}", "WARN")
-        return vendor, date_str
-
-    def _open_process(self, card, result: CardResult, dest_folder: Path,
-                      expected_types: list, stage_name: str):
-        # ── Step 1: hover over card to read the popup tooltip ─────────────────
-        vendor, date_str = self._hover_tooltip(card)
-        self._emit(f"  tooltip → ספק: '{vendor}' | תאריך: '{date_str}'")
-
-        # ── Fast pre-check: if file already exists, skip without opening panel ─
-        if vendor and (date_str or result.doc_date):
-            _dt = parse_date(date_str) if date_str else None
-            _fd = fmt_date_il(_dt) if _dt else result.doc_date
-            if _fd:
-                _bn = f"{safe_name(vendor)} {safe_name(_fd)}"
-                if list(dest_folder.glob(f"{_bn}.*")):
-                    result.status   = "dup_invoice" if stage_name != "קבלה" else "dup_receipt"
-                    result.note     = "קובץ זהה כבר קיים"
-                    result.filename = _bn
-                    result.vendor   = vendor
-                    result.doc_date = _fd
-                    self._emit(f"  ← קיים כבר (ללא פתיחת פאנל) — {_bn}")
-                    return
-
-        # ── Step 2: click card to open detail panel (for doc_type only) ───────
-        try:
-            self.driver.execute_script("""
-                var r=arguments[0].getBoundingClientRect();
-                var el=document.elementFromPoint(r.left+r.width/2, r.top+r.height/2);
-                if(el) el.click(); else arguments[0].click();
-            """, card)
-        except Exception:
-            self.driver.execute_script("arguments[0].click();", card)
-        time.sleep(2)
-
-        # Get panel
-        panel = self._get_panel()
-        if not panel:
-            self._shot("error_no_panel")
-            result.status = "error"
-            result.note   = "פאנל לא נפתח"
-            return
-
-        lines = [l.strip() for l in panel.text.split('\n') if l.strip()]
-        doc_type = self._field_val("סוג מסמך", lines)
-
-        # Fallback: if hover didn't get vendor/date, try panel text
-        if not vendor:
-            vendor = self._js_field_val(panel, "ספק") or self._field_val("ספק", lines)
-        if not date_str:
-            date_str = (self._js_field_val(panel, 'תאריך ע״ג המסמך') or
-                        self._js_field_val(panel, 'תאריך ע"ג המסמך') or
-                        self._field_val('תאריך ע״ג המסמך', lines) or
-                        self._field_val('תאריך ע"ג המסמך', lines))
-
-        result.doc_type = doc_type
-        result.vendor   = vendor
-
-        if date_str:
-            dt = parse_date(date_str)
-            if dt:
-                result.doc_date = fmt_date_il(dt)
-
-        self._emit(f"  סוג: '{doc_type}' | ספק: '{vendor}' | תאריך: '{date_str}'")
-
-        # Verify doc type — exact match (prevents 'קבלה' matching inside 'חשבונית מס / קבלה')
-        if not type_matches(doc_type, expected_types):
-            result.status = "skipped"
-            result.note   = f"סוג '{doc_type}' — לא {stage_name}"
-            self._emit(f"  ← דלג: {result.note}", "WARN")
-            return
-
-        # Build filename — safe_name on full string ensures no illegal chars
-        fn_vendor = safe_name(vendor) if vendor else "ללא_ספק"
-        fn_date   = safe_name(result.doc_date or fmt_date_il(datetime.now()))
-        base_name = f"{fn_vendor} {fn_date}"
-
-        # Duplicate check
-        if list(dest_folder.glob(f"{base_name}.*")):
-            result.status = "dup_invoice" if stage_name != "קבלה" else "dup_receipt"
-            result.note   = "קובץ זהה כבר קיים"
-            result.filename = base_name
-            self._emit(f"  ← דלג: קיים כבר — {base_name}", "WARN")
-            return
-
-        # Download
-        self._emit(f"  מוריד: {base_name}…")
-        downloaded = self._download(dest_folder, base_name)
-        if downloaded:
-            result.status   = "downloaded_invoice" if stage_name != "קבלה" else "downloaded_receipt"
-            result.filename = downloaded.name
-            self._emit(f"  ✓ {downloaded.name}")
-        else:
-            result.status = "error"
-            result.note   = "הורדה נכשלה"
-            self._emit("  ✗ הורדה נכשלה", "ERROR")
-
-    def _get_panel(self):
-        selectors = [
-            "[class*='drawer']","[class*='Drawer']",
-            "[class*='panel']","[class*='Panel']",
-            "[class*='detail']","[class*='Detail']",
-            "[class*='sidebar']","[class*='Sidebar']",
-            "[role='dialog']","[role='complementary']",
-        ]
-        for sel in selectors:
+            self._emit(f"  שולף עמוד {page}…")
             try:
-                for el in self.driver.find_elements(By.CSS_SELECTOR, sel):
-                    txt = el.text.strip()
-                    if el.is_displayed() and len(txt) > 30 and "סוג מסמך" in txt:
-                        return el
-            except Exception:
-                pass
-        # fallback: find element containing "סוג מסמך" and walk up
-        try:
-            label = self.driver.find_element(
-                By.XPATH, "//*[contains(text(),'סוג מסמך')]"
-            )
-            el = label
-            for _ in range(8):
-                el = el.find_element(By.XPATH, "..")
-                w, h = el.size.get('width', 0), el.size.get('height', 0)
-                if w > 200 and h > 300:
-                    return el
-        except Exception:
-            pass
-        return None
+                resp = session.get(API_URL, params=params, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as e:
+                self._emit(f"  שגיאת API בעמוד {page}: {e}", "ERROR")
+                break
 
-    def _js_field_val(self, panel_el, label: str) -> str:
-        """Find a panel field value by label text using JS DOM traversal,
-        scoped to the panel element to avoid matching the column-picker sidebar.
-        Also checks input[value] for React-controlled fields."""
-        variants = [label]
-        if '\u05f4' in label:                          # gershayim → also try ASCII "
-            variants.append(label.replace('\u05f4', '"'))
-        elif '"' in label:                             # ASCII " → also try gershayim
-            variants.append(label.replace('"', '\u05f4'))
+            items = data.get('items') or []
+            total_pages = data.get('pages', 1)
+            self._emit(f"  עמוד {page}/{total_pages} — {len(items)} פריטים")
 
-        for lv in variants:
-            result = self.driver.execute_script("""
-                var container = arguments[0];
-                var lbl = arguments[1];
-                var KNOWN = new Set([
-                    '\u05e1\u05d5\u05d2 \u05de\u05e1\u05de\u05da','\u05e1\u05e4\u05e7',
-                    '\u05de\u05d8\u05d1\u05e2','\u05e1\u05db\u05d5\u05dd','\u05ea\u05d0\u05e8\u05d9\u05da',
-                    '\u05de\u05e1\u05e4\u05e8','\u05e1\u05d8\u05d0\u05d8\u05d5\u05e1',
-                    '\u05de\u05e7\u05d5\u05e8','\u05e7\u05d8\u05d2\u05d5\u05e8\u05d9\u05d4',
-                    '\u05e2\u05e1\u05e7','\u05e1\u05da \u05d4\u05db\u05dc',
-                    '\u05e1\u05d8\u05d0\u05d8\u05d5\u05e1 \u05ea\u05e9\u05dc\u05d5\u05dd',
-                    '\u05de\u05e1\u05e4\u05e8 \u05de\u05e1\u05de\u05da',
-                    '\u05d7\u05d1\u05e8 \u05e6\u05d5\u05d5\u05ea','\u05d4\u05e2\u05e8\u05d4',
-                    '\u05ea\u05d0\u05e8\u05d9\u05da \u05e2\u05dc\u05d0\u05ea \u05d4\u05de\u05e1\u05de\u05da'
-                ]);
-                var all = container.querySelectorAll(
-                    'p,span,div,td,dt,label,h1,h2,h3,h4,h5,h6');
-                for (var i = 0; i < all.length; i++) {
-                    var el = all[i];
-                    if (!el.offsetParent) continue;
-                    if (el.children.length > 2) continue;
-                    var txt = (el.innerText || el.textContent || '').trim();
-                    if (txt !== lbl) continue;
+            past_cutoff = False
+            for item in items:
+                doc_date_raw = item.get('doc_date') or item.get('source_date') or ''
+                doc_dt = None
+                if doc_date_raw:
+                    try:
+                        doc_dt = datetime.fromisoformat(doc_date_raw[:10])
+                    except Exception:
+                        doc_dt = parse_date(doc_date_raw)
 
-                    // Strategy 1: sibling in same parent
-                    var par = el.parentElement;
-                    if (par) {
-                        var ch = Array.prototype.slice.call(par.children);
-                        for (var j = 0; j < ch.length; j++) {
-                            if (ch[j] === el) continue;
-                            var v = (ch[j].innerText || ch[j].textContent || '').trim();
-                            if (v && v !== lbl && !KNOWN.has(v)) return v;
-                            // check input[value] inside sibling
-                            var inp = ch[j].querySelector('input,textarea');
-                            if (inp && inp.value) return inp.value;
-                        }
-                        // Strategy 2: parent's next sibling (2-col grid row)
-                        var gp = par.parentElement;
-                        if (gp) {
-                            var gpch = Array.prototype.slice.call(gp.children);
-                            var pi = gpch.indexOf(par);
-                            if (pi + 1 < gpch.length) {
-                                var v = (gpch[pi+1].innerText || gpch[pi+1].textContent || '').trim();
-                                if (v && v !== lbl && !KNOWN.has(v)) return v;
-                                var inp = gpch[pi+1].querySelector('input,textarea');
-                                if (inp && inp.value) return inp.value;
-                            }
-                        }
-                    }
-                    // Strategy 3: next sibling element
-                    var ns = el.nextElementSibling;
-                    if (ns) {
-                        var v = (ns.innerText || ns.textContent || '').trim();
-                        if (v && v !== lbl && !KNOWN.has(v)) return v;
-                        var inp = ns.querySelector('input,textarea');
-                        if (inp && inp.value) return inp.value;
-                    }
-                }
-                return null;
-            """, panel_el, lv)
-            if result:
-                return result.strip()
-        return ""
-
-    def _field_val(self, label: str, lines: list) -> str:
-        idx = -1
-        try:
-            idx = lines.index(label)
-        except ValueError:
-            for i, l in enumerate(lines):
-                if l.startswith(label):
-                    idx = i
+                if doc_dt and doc_dt < self._cutoff:
+                    self._emit(f"  תאריך {doc_date_raw[:10]} — מחוץ לטווח, עוצר")
+                    past_cutoff = True
                     break
-        if idx == -1:
-            return ""
-        for val in lines[idx + 1:]:
-            if val in KNOWN_LABELS:
-                continue
-            if val:
-                return val
-        return ""
+                all_docs.append(item)
 
-    def _close_card(self):
-        try:
-            self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-            time.sleep(0.5)
-        except Exception:
-            pass
-        for xp in [
-            "//button[@aria-label='close' or @aria-label='סגור']",
-            "//*[@data-testid='CloseIcon']/..",
-            "//button[contains(@class,'close') or contains(@class,'Close')]",
-        ]:
-            try:
-                self.driver.find_element(By.XPATH, xp).click()
-                time.sleep(0.5)
-                return
-            except Exception:
-                pass
+            if past_cutoff or page >= total_pages:
+                break
+            page += 1
 
-    # ── download ──────────────────────────────────────────────────────────────
-    def _download(self, dest_folder: Path, base_name: str) -> Optional[Path]:
-        """
-        Download file to _dl_tmp, wait for it to complete, then move+rename to dest_folder.
-        Using _dl_tmp avoids mid-session CDP path changes which are unreliable.
-        """
-        tmp = self._dl_tmp
-        tmp.mkdir(parents=True, exist_ok=True)
+        self._emit(f"  סה״כ {len(all_docs)} מסמכים (סרקתי {page} עמודים)")
+        return all_docs
 
-        # Snapshot tmp folder before clicking
-        before = set(tmp.iterdir())
+    # ── download & save docs ───────────────────────────────────────────────────
+    def _process_docs(self, docs: list, dest_folder: Path,
+                      stage_name: str, session) -> None:
+        dest_folder.mkdir(parents=True, exist_ok=True)
+        dl_stat  = f"downloaded_{'invoice' if stage_name == 'חשבונית' else 'receipt'}"
+        dup_stat = f"dup_{'invoice' if stage_name == 'חשבונית' else 'receipt'}"
 
-        # Find and click the download button — screenshot before to diagnose
-        self._shot("before_dl")
-        clicked = False
-
-        # Priority 1: direct download buttons (no submenu)
-        for xp in [
-            "//*[@aria-label='download' or @aria-label='הורד' or @title='הורד' or @title='Download']",
-            "//*[@data-testid and (contains(@data-testid,'ownload') or contains(@data-testid,'Download'))]",
-            "//*[contains(@class,'download') or contains(@class,'Download')][self::button or self::a]",
-        ]:
-            try:
-                for el in self.driver.find_elements(By.XPATH, xp):
-                    if el.is_displayed():
-                        self._emit(f"  כפתור הורדה ישיר: '{el.text.strip()[:30]}'")
-                        self.driver.execute_script("arguments[0].click();", el)
-                        clicked = True
-                        break
-                if clicked:
-                    break
-            except Exception:
-                pass
-
-        # Priority 2: "הורדה/שליחה" split button → click it; if a submenu appears, also click "הורדה"
-        if not clicked:
-            try:
-                split_btn = self.driver.find_element(
-                    By.XPATH, "//button[contains(.,'הורדה') or contains(.,'שליחה')]"
-                )
-                if split_btn.is_displayed():
-                    self._emit(f"  כפתור הורדה: tag=button text='{split_btn.text.strip()[:30]}'")
-                    self.driver.execute_script("arguments[0].click();", split_btn)
-                    clicked = True   # clicking the button itself counts — download may start now
-                    time.sleep(1.5)
-                    self._shot("after_split_click")
-                    # If a submenu appeared, click "הורדה" within it
-                    for xp in [
-                        "//*[normalize-space(text())='הורדה']",
-                        "//*[normalize-space(text())='הורד']",
-                        "//*[contains(.,'הורדה') and not(contains(.,'שליחה'))][self::li or self::a or self::div or self::span]",
-                        "//li[contains(.,'הורד')]",
-                        "//*[@role='menuitem' and contains(.,'הורד')]",
-                        "//*[@role='option' and contains(.,'הורד')]",
-                    ]:
-                        found_sub = False
-                        try:
-                            for opt in self.driver.find_elements(By.XPATH, xp):
-                                if opt.is_displayed():
-                                    self._emit(f"  לחץ submenu: '{opt.text.strip()[:30]}'")
-                                    self.driver.execute_script("arguments[0].click();", opt)
-                                    found_sub = True
-                                    break
-                        except Exception:
-                            pass
-                        if found_sub:
-                            break
-            except NoSuchElementException:
-                pass
-
-        if not clicked:
-            self._shot("error_no_dl_btn")
-            try:
-                panel = self._get_panel()
-                if panel:
-                    btns = panel.find_elements(By.XPATH, ".//button | .//a")
-                    visible = [(b.tag_name, b.text.strip()[:40],
-                                b.get_attribute("aria-label"),
-                                b.get_attribute("class")) for b in btns if b.is_displayed()]
-                    self._emit(f"  כפתורים בפאנל: {visible}", "WARN")
-            except Exception:
-                pass
-            self._emit("  כפתור הורדה לא נמצא", "WARN")
-            return None
-
-        import shutil
-        click_time = time.time()
-        time.sleep(1)
-        self._shot("after_dl_click")   # see if a dialog/tab opened
-
-        # Folders to watch: _dl_tmp + system Downloads (fallback)
-        watch_dirs = [tmp]
-        sys_dl = Path.home() / "Downloads"
-        if sys_dl.exists() and sys_dl != tmp:
-            watch_dirs.append(sys_dl)
-
-        deadline = time.time() + 45
-        while time.time() < deadline:
+        for idx, doc in enumerate(docs, 1):
             if self.stop_event.is_set():
-                return None
-            time.sleep(1)
-            for watch in watch_dirs:
-                try:
-                    candidates = [
-                        f for f in watch.iterdir()
-                        if f.is_file()
-                        and f.suffix not in (".crdownload", ".tmp", ".part")
-                        and f.stat().st_mtime >= click_time - 3
-                    ]
-                    if candidates:
-                        src = max(candidates, key=lambda x: x.stat().st_mtime)
-                        # Wait a moment to ensure fully written
-                        time.sleep(0.8)
-                        dest_folder.mkdir(parents=True, exist_ok=True)
-                        dst = dest_folder / f"{base_name}{src.suffix}"
-                        if dst.exists():
-                            src.unlink()
-                            return dst
-                        shutil.move(str(src), str(dst))
-                        self._emit(f"  ✓ קובץ הועבר: {dst.name}")
-                        return dst
-                except Exception as e:
-                    self._emit(f"  שגיאת העברה ({watch.name}): {e}", "WARN")
+                break
 
-        self._emit("  הורדה לא הושלמה תוך 45 שניות", "WARN")
-        self._shot("dl_timeout")
-        return None
+            vendor = safe_name(doc.get('vendor_title') or 'לא ידוע')
+            doc_date_raw = doc.get('doc_date') or doc.get('source_date') or ''
+            doc_dt = None
+            if doc_date_raw:
+                try:
+                    doc_dt = datetime.fromisoformat(doc_date_raw[:10])
+                except Exception:
+                    doc_dt = parse_date(doc_date_raw)
+            date_str     = fmt_date_il(doc_dt) if doc_dt else 'לא ידוע'
+            doc_type     = doc.get('doc_type') or ''
+            download_url = doc.get('download_pdf_url') or ''
+
+            result = CardResult(
+                idx=idx,
+                vendor=vendor,
+                doc_date=date_str,
+                doc_type=doc_type,
+            )
+
+            if not download_url:
+                self._emit(f"  #{idx}: {vendor} {date_str} — אין קישור הורדה", "WARN")
+                result.status = 'skipped'
+                result.note   = 'אין קישור הורדה'
+                self.results.append(result)
+                continue
+
+            filename  = f"{vendor} {date_str}.pdf"
+            dest_path = dest_folder / filename
+
+            if dest_path.exists():
+                self._emit(f"  #{idx}: {filename} — כבר קיים, דלג")
+                result.status   = dup_stat
+                result.filename = filename
+                result.note     = 'קובץ קיים'
+                self.results.append(result)
+                continue
+
+            self._emit(f"  #{idx}: מוריד {filename}…")
+            try:
+                resp = session.get(download_url, timeout=60, stream=True)
+                resp.raise_for_status()
+                with open(dest_path, 'wb') as fh:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        if chunk:
+                            fh.write(chunk)
+                result.status   = dl_stat
+                result.filename = filename
+                self._emit(f"  ✓ {filename}")
+            except Exception as e:
+                self._emit(f"  #{idx}: שגיאת הורדה — {e}", "ERROR")
+                result.status = 'error'
+                result.note   = str(e)
+
+            self.results.append(result)
+
 
     # ── logout ────────────────────────────────────────────────────────────────
     def _logout(self):
