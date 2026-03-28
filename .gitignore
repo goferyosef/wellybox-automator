@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Diagnostic / temporary files
+diag_*.py
+diag_*.txt
+diag_*.png
+logs/
+_dl_tmp/
+
+# Reports and downloaded files (runtime output)
+*.xlsx
+*.docx
+*.pdf
+
+# Credentials / secrets
+*.env
