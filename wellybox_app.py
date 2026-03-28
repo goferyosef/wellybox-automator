@@ -273,11 +273,21 @@ class Bot:
             if self.stop_event.is_set():
                 return
 
+            # Log every doc_type found so we can verify the filter values
+            from collections import Counter
+            type_counts = Counter(d.get('doc_type', '(ריק)') for d in all_docs)
+            self._emit(f"  סוגי מסמכים: {dict(type_counts)}")
+
             # Split by doc_type
             invoice_docs = [d for d in all_docs
                             if d.get('doc_type') in ('invoice', 'invoice_receipt')]
             receipt_docs = [d for d in all_docs
                             if d.get('doc_type') == 'receipt']
+            other_docs   = [d for d in all_docs
+                            if d not in invoice_docs and d not in receipt_docs]
+            if other_docs:
+                other_types = list({d.get('doc_type') for d in other_docs})
+                self._emit(f"  {len(other_docs)} מסמכים לא מסווגים: {other_types}", "WARN")
 
             # Stage 1 — invoices
             self._emit(f"══════ שלב 1: חשבוניות ({len(invoice_docs)}) ══════")
