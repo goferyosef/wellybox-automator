@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 try:
     from selenium import webdriver
@@ -224,11 +224,13 @@ def type_matches(doc_type: str, expected_types: list) -> bool:
 
 # ── Bot ───────────────────────────────────────────────────────────────────────
 class Bot:
-    def __init__(self, days_back: int, output_folder: Path, log_cb, done_cb):
+    def __init__(self, days_back: int, output_folder: Path, log_cb, done_cb,
+                 max_docs: int = 30):
         self.days_back     = days_back
         self.output_folder = output_folder
         self._log_cb       = log_cb
         self._done_cb      = done_cb
+        self.max_docs      = max_docs
         self.driver        = None
         self.stop_event    = threading.Event()
         self.results       = []
@@ -513,6 +515,10 @@ class Bot:
 
             past_cutoff = False
             for item in items:
+                if len(all_docs) >= self.max_docs:
+                    self._emit(f"  הגעתי למגבלת {self.max_docs} מסמכים, עוצר")
+                    past_cutoff = True
+                    break
                 doc_date_raw = item.get('doc_date') or item.get('source_date') or ''
                 doc_dt = None
                 if doc_date_raw:
@@ -774,15 +780,21 @@ class App(tk.Tk):
         tk.Spinbox(top, from_=1, to=365, textvariable=self._days,
                    width=6, justify="center").grid(row=0, column=1, sticky="w", **pad)
 
-        tk.Label(top, text="תיקיית פלט:").grid(row=1, column=0, sticky="e", **pad)
+        tk.Label(top, text="כמה כרטיסים לסרוק:").grid(row=1, column=0, sticky="e", **pad)
+        self._max_docs = tk.StringVar(value="30")
+        ttk.Combobox(top, textvariable=self._max_docs,
+                     values=["10", "20", "30", "45", "60", "100"],
+                     state="readonly", width=8).grid(row=1, column=1, sticky="w", **pad)
+
+        tk.Label(top, text="תיקיית פלט:").grid(row=2, column=0, sticky="e", **pad)
         self._folder = tk.StringVar(
             value=str(Path.home() / "Desktop")
         )
         tk.Entry(top, textvariable=self._folder, width=44).grid(
-            row=1, column=1, sticky="w", **pad
+            row=2, column=1, sticky="w", **pad
         )
         tk.Button(top, text="…", width=3, command=self._browse).grid(
-            row=1, column=2, padx=(0, 8)
+            row=2, column=2, padx=(0, 8)
         )
 
         # Buttons
@@ -857,6 +869,7 @@ class App(tk.Tk):
             output_folder=Path(self._folder.get()),
             log_cb=self._append,
             done_cb=self._on_done,
+            max_docs=int(self._max_docs.get()),
         )
         self._bot.start()
 
