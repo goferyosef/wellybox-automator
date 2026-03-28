@@ -682,16 +682,14 @@ class Bot:
             try:
                 text = card.text.strip()
 
-                if "נשמר" in text:
-                    # Show the first non-status line as a quick vendor hint
-                    _lines = [l.strip() for l in text.split('\n')
-                              if l.strip() and l.strip() not in ('נשמר', 'חדש')]
-                    _hint = _lines[0][:40] if _lines else ''
-                    self._emit(f"  #{card_num}: נשמר — דלג ({_hint})")
-                    continue
-
-                if "חדש" not in text:
-                    continue
+                # Log status for diagnosis but do NOT skip based on it.
+                # WellyBox marks every AI-processed document "נשמר" on arrival —
+                # that is unrelated to whether our app has downloaded it yet.
+                _status = "נשמר" if "נשמר" in text else ("חדש" if "חדש" in text else "?")
+                _lines  = [l.strip() for l in text.split('\n')
+                           if l.strip() and l.strip() not in ('נשמר', 'חדש')]
+                _hint   = _lines[0][:40] if _lines else ''
+                self._emit(f"  #{card_num}: {_status} ({_hint})")
 
                 card_date = self._date_from_text(text)
                 if card_date is None:
@@ -847,6 +845,21 @@ class Bot:
         # ── Step 1: hover over card to read the popup tooltip ─────────────────
         vendor, date_str = self._hover_tooltip(card)
         self._emit(f"  tooltip → ספק: '{vendor}' | תאריך: '{date_str}'")
+
+        # ── Fast pre-check: if file already exists, skip without opening panel ─
+        if vendor and (date_str or result.doc_date):
+            _dt = parse_date(date_str) if date_str else None
+            _fd = fmt_date_il(_dt) if _dt else result.doc_date
+            if _fd:
+                _bn = f"{safe_name(vendor)} {safe_name(_fd)}"
+                if list(dest_folder.glob(f"{_bn}.*")):
+                    result.status   = "dup_invoice" if stage_name != "קבלה" else "dup_receipt"
+                    result.note     = "קובץ זהה כבר קיים"
+                    result.filename = _bn
+                    result.vendor   = vendor
+                    result.doc_date = _fd
+                    self._emit(f"  ← קיים כבר (ללא פתיחת פאנל) — {_bn}")
+                    return
 
         # ── Step 2: click card to open detail panel (for doc_type only) ───────
         try:
