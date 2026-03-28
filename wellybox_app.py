@@ -463,18 +463,48 @@ class Bot:
 
     # ── API session ───────────────────────────────────────────────────────────
     def _build_session(self):
-        import requests
+        import requests, json as _json
         session = requests.Session()
+
+        # Copy cookies without domain restriction so they reach api.app.wellybox.com
         for cookie in self.driver.get_cookies():
-            session.cookies.set(
-                cookie['name'], cookie['value'],
-                domain=cookie.get('domain', '').lstrip('.')
-            )
-        session.headers.update({
-            'User-Agent': self.driver.execute_script('return navigator.userAgent'),
-            'Referer': 'https://app.wellybox.com/',
-            'Origin': 'https://app.wellybox.com',
-        })
+            session.cookies.set(cookie['name'], cookie['value'])
+
+        ua = self.driver.execute_script('return navigator.userAgent')
+        headers = {
+            'User-Agent': ua,
+            'Referer':    'https://app.wellybox.com/',
+            'Origin':     'https://app.wellybox.com',
+        }
+
+        # Try to pull JWT from localStorage / sessionStorage
+        token = self.driver.execute_script("""
+            var keys = ['access_token','token','auth_token','jwt','id_token',
+                        'accessToken','authToken','idToken'];
+            for (var s of [localStorage, sessionStorage]) {
+                for (var k of keys) {
+                    var v = s.getItem(k);
+                    if (v) return v;
+                }
+            }
+            return null;
+        """)
+
+        if token:
+            # Token may itself be a JSON string containing a nested token
+            try:
+                parsed = _json.loads(token)
+                if isinstance(parsed, dict):
+                    token = (parsed.get('access_token') or parsed.get('token')
+                             or parsed.get('id_token') or token)
+            except Exception:
+                pass
+            headers['Authorization'] = f'Bearer {token}'
+            self._emit(f"  ✓ JWT נמצא ({len(token)} תווים)")
+        else:
+            self._emit("  לא נמצא JWT — מנסה עם cookies בלבד", "WARN")
+
+        session.headers.update(headers)
         self._emit("  ✓ העברתי session ל-requests")
         return session
 
@@ -492,7 +522,7 @@ class Bot:
                 "sort_dir": "desc",
                 "page": page,
                 "page_size": 60,
-            })
+            }, separators=(',', ':'))
             params = {
                 "docs_filter": docs_filter,
                 "cver": "2.4.1",
@@ -501,12 +531,15 @@ class Bot:
                 "culture": "he_IL",
             }
             self._emit(f"  שולף עמוד {page}…")
+            resp = None
             try:
                 resp = session.get(API_URL, params=params, timeout=30)
                 resp.raise_for_status()
                 data = resp.json()
             except Exception as e:
                 self._emit(f"  שגיאת API בעמוד {page}: {e}", "ERROR")
+                if resp is not None:
+                    self._emit(f"  תשובת שרת: {resp.text[:600]}", "ERROR")
                 break
 
             items = data.get('items') or []
