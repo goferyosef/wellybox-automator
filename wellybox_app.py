@@ -265,6 +265,7 @@ class Bot:
             self._go_to_all_receipts()
             self._apply_filter(check=["חשבונית", "חשבונית מס /קבלה"],
                                uncheck=["קבלה"])
+            self._sort_by_date()
             self._process_stage(self.output_folder / "חשבוניות לקליטה",
                                 INVOICE_TYPES, "חשבונית")
             if self.stop_event.is_set():
@@ -274,6 +275,7 @@ class Bot:
             self._go_to_all_receipts()
             self._apply_filter(check=["קבלה"],
                                uncheck=["חשבונית", "חשבונית מס /קבלה"])
+            self._sort_by_date()
             self._process_stage(self.output_folder / "קבלות",
                                 RECEIPT_TYPES, "קבלה")
             self._logout()
@@ -476,6 +478,81 @@ class Bot:
             time.sleep(1)
         except TimeoutException:
             pass  # no active filters — nothing to clear
+
+    # ── sort ──────────────────────────────────────────────────────────────────
+    def _sort_by_date(self):
+        """Sort the card list by document date, newest first.
+        Tries the WellyBox sort dropdown; falls back to column-header click."""
+        self._emit("ממיין לפי תאריך (חדש לישן)…")
+
+        # Discover all visible sort-related controls for diagnosis
+        candidates = self.driver.execute_script("""
+            var out = [];
+            var all = document.querySelectorAll(
+                'button,[role="button"],[role="option"],[role="menuitem"],' +
+                'th,[role="columnheader"],[class*="sort"],[class*="Sort"]');
+            for (var i = 0; i < all.length; i++) {
+                var el = all[i];
+                if (!el.offsetParent) continue;
+                var txt = (el.innerText || el.textContent || '').trim();
+                if (!txt) continue;
+                if (txt.includes('\u05de\u05d9\u05d9\u05df') ||   // מיין
+                    txt.includes('\u05e1\u05d3\u05e8') ||          // סדר
+                    txt.includes('\u05ea\u05d0\u05e8\u05d9\u05da') || // תאריך
+                    txt.toLowerCase().includes('sort') ||
+                    txt.toLowerCase().includes('date'))
+                    out.push(txt.substring(0, 60));
+            }
+            return out;
+        """) or []
+        self._emit(f"  בקרי מיון שנמצאו: {candidates}")
+
+        # Strategy 1 — click "מיין" or sort dropdown, then pick date option
+        for sort_label in ["מיין לפי", "מיין", "סדר לפי", "Sort"]:
+            if self._js_click_text(sort_label, wait=4):
+                time.sleep(0.8)
+                # Now click the date option in the opened dropdown
+                for date_label in [
+                    'תאריך ע״ג המסמך', 'תאריך ע"ג המסמך',
+                    "תאריך המסמך", "תאריך", "Date",
+                ]:
+                    if self._js_click_text(date_label, wait=4):
+                        time.sleep(0.5)
+                        # Second click may be needed to switch to descending
+                        self._js_click_text(date_label, wait=3)
+                        self._emit("  ✓ ממוין לפי תאריך")
+                        time.sleep(2)
+                        try:
+                            self._w(20).until_not(
+                                EC.presence_of_element_located(
+                                    (By.CSS_SELECTOR, ".MuiSkeleton-root")))
+                        except TimeoutException:
+                            pass
+                        time.sleep(1)
+                        return
+                break  # dropdown opened but date option not found
+
+        # Strategy 2 — click a date column/sort header directly
+        for xp in [
+            "//*[@role='columnheader' and contains(.,'תאריך')]",
+            "//th[contains(.,'תאריך')]",
+            "//*[contains(@class,'sort') and contains(.,'תאריך')]",
+            "//*[contains(@class,'Sort') and contains(.,'תאריך')]",
+        ]:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    if el.is_displayed():
+                        self.driver.execute_script("arguments[0].click();", el)
+                        time.sleep(0.5)
+                        self.driver.execute_script("arguments[0].click();", el)
+                        self._emit("  ✓ ממוין לפי תאריך (כותרת עמודה)")
+                        time.sleep(2)
+                        return
+            except Exception:
+                pass
+
+        self._emit("  לא הצלחתי למיין — ממשיך ללא מיון", "WARN")
 
     # ── filter ────────────────────────────────────────────────────────────────
     def _apply_filter(self, check: list, uncheck: list):
@@ -699,8 +776,8 @@ class Bot:
                 if card_date < self._cutoff:
                     self._emit(f"  #{card_num}: {card_date.strftime('%d/%m/%Y')} — מחוץ לטווח")
                     out_of_range_streak += 1
-                    if out_of_range_streak >= 5:
-                        self._emit("5 כרטיסים רצופים מחוץ לטווח — עוצר גלילה")
+                    if out_of_range_streak >= 10:
+                        self._emit("10 כרטיסים רצופים מחוץ לטווח — עוצר גלילה")
                         return
                     continue
 
