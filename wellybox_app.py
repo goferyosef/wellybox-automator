@@ -774,7 +774,7 @@ class Bot:
         ts = datetime.now().strftime("%d.%m.%Y")
 
         # ד"ח פעולות — LibreOffice Writer (.docx)
-        doc_path = rep_dir / f'ד"ח פעולות {ts}.docx'
+        doc_path = rep_dir / f'ד״ח פעולות {ts}.docx'
         if DOCX_OK:
             doc = Document()
             # Title
@@ -808,7 +808,7 @@ class Bot:
             ])
         else:
             # Fallback to plain text if python-docx not available
-            txt_path = rep_dir / f'ד"ח פעולות {ts}.txt'
+            txt_path = rep_dir / f'ד״ח פעולות {ts}.txt'
             with open(txt_path, "w", encoding="utf-8") as f:
                 f.write('WellyBox — ד"ח פעולות\n')
                 f.write(f"תאריך הפעלה: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n")
@@ -880,7 +880,7 @@ class Bot:
                 w = max((len(str(c.value or "")) for c in col), default=0)
                 sheet.column_dimensions[get_column_letter(col[0].column)].width = min(w + 4, 55)
 
-        xls_path = rep_dir / f'דו"ח הורדות {ts}.xlsx'
+        xls_path = rep_dir / f'דו״ח הורדות {ts}.xlsx'
         wb.save(xls_path)
         self._emit(f'דו"ח הורדות → {xls_path}')
 
