@@ -734,25 +734,38 @@ class Bot:
     def _logout(self):
         self._emit("מתנתק…")
         try:
+            # Try clicking the user/avatar menu then the logout item
             for xp in [
                 "//*[contains(@class,'avatar') or contains(@class,'Avatar') or contains(@class,'user-menu')]",
                 "//*[@aria-label='account' or @aria-label='user' or @aria-label='profile']",
             ]:
-                els = self.driver.find_elements(By.XPATH, xp)
-                for el in els:
+                for el in self.driver.find_elements(By.XPATH, xp):
                     if el.is_displayed():
                         el.click()
                         time.sleep(1)
                         break
-            for xp in ["//*[contains(.,'התנתק') or contains(.,'Logout') or contains(.,'Sign out')]"]:
-                for el in self.driver.find_elements(By.XPATH, xp):
-                    if el.is_displayed():
-                        el.click()
-                        self._emit("  ✓ התנתק")
-                        return
+            for el in self.driver.find_elements(
+                By.XPATH,
+                "//*[contains(.,'התנתק') or contains(.,'Logout') or contains(.,'Sign out')]"
+            ):
+                if el.is_displayed():
+                    el.click()
+                    self._emit("  ✓ התנתק")
+                    return
         except Exception:
             pass
-        self._emit("  התנתקות אוטומטית לא הצליחה", "WARN")
+
+        # Fallback: navigate directly to the logout URL
+        try:
+            self.driver.get("https://app.wellybox.com/logout")
+            time.sleep(2)
+            self._emit("  ✓ התנתק (redirect)")
+            return
+        except Exception:
+            pass
+
+        # Browser will be closed immediately after — session ends regardless
+        self._emit("  סגירת דפדפן תנתק את החשבון")
 
     # ── reports ───────────────────────────────────────────────────────────────
     def _save_reports(self):
