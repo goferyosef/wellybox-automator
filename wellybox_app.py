@@ -95,6 +95,21 @@ COLOR_YELLOW = "FFF9C4"
 COLOR_GREY   = "EEEEEE"
 COLOR_ORANGE = "FFE0B2"
 
+CONFIG_PATH = Path(__file__).parent / "wellybox_config.json"
+
+def load_folder_config() -> dict:
+    try:
+        if CONFIG_PATH.exists():
+            import json as _j
+            return _j.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+def save_folder_config(cfg: dict) -> None:
+    import json as _j
+    CONFIG_PATH.write_text(_j.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 @dataclass
@@ -153,6 +168,84 @@ class CredsDialog(tk.Toplevel):
     def _ok(self):
         self.username = self._u.get().strip()
         self.password = self._p.get()
+        self.destroy()
+
+
+# ── Folder selection dialog ───────────────────────────────────────────────────
+class FolderDialog(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("בחר תיקיות שמירה")
+        self.resizable(False, False)
+        self.grab_set()
+        self.invoice_folder: str = ""
+        self.receipt_folder: str = ""
+        self._confirmed = False
+
+        cfg = load_folder_config()
+        default_inv = cfg.get("default_invoice_folder", str(Path.home() / "Desktop"))
+        default_rec = cfg.get("default_receipt_folder", str(Path.home() / "Desktop"))
+
+        pad = {"padx": 10, "pady": 6}
+
+        tk.Label(self, text="תיקיית חשבוניות / דוחות:", anchor="e").grid(
+            row=0, column=0, sticky="e", **pad)
+        self._inv = tk.StringVar(value=default_inv)
+        tk.Entry(self, textvariable=self._inv, width=44).grid(row=0, column=1, **pad)
+        tk.Button(self, text="…", width=3,
+                  command=lambda: self._browse(self._inv)).grid(row=0, column=2, padx=(0, 8))
+
+        self._save_inv = tk.BooleanVar(value=False)
+        tk.Checkbutton(self, text="קבע כברירת מחדל לחשבוניות",
+                       variable=self._save_inv).grid(
+            row=1, column=1, sticky="w", padx=10, pady=(0, 4))
+
+        tk.Label(self, text="תיקיית קבלות:", anchor="e").grid(
+            row=2, column=0, sticky="e", **pad)
+        self._rec = tk.StringVar(value=default_rec)
+        tk.Entry(self, textvariable=self._rec, width=44).grid(row=2, column=1, **pad)
+        tk.Button(self, text="…", width=3,
+                  command=lambda: self._browse(self._rec)).grid(row=2, column=2, padx=(0, 8))
+
+        self._save_rec = tk.BooleanVar(value=False)
+        tk.Checkbutton(self, text="קבע כברירת מחדל לקבלות",
+                       variable=self._save_rec).grid(
+            row=3, column=1, sticky="w", padx=10, pady=(0, 8))
+
+        bf = tk.Frame(self)
+        bf.grid(row=4, column=0, columnspan=3, pady=8)
+        tk.Button(bf, text="המשך", width=12,
+                  bg="#2e7d32", fg="white", activebackground="#1b5e20",
+                  font=("Segoe UI", 10, "bold"),
+                  command=self._ok).pack(side="left", padx=6)
+        tk.Button(bf, text="ביטול", width=10, command=self.destroy).pack(side="left", padx=6)
+
+        self.bind("<Return>", lambda _: self._ok())
+        self.wait_window()
+
+    def _browse(self, var: tk.StringVar):
+        current = var.get()
+        initial = current if Path(current).exists() else str(Path.home())
+        d = filedialog.askdirectory(title="בחר תיקייה", initialdir=initial)
+        if d:
+            var.set(d)
+
+    def _ok(self):
+        inv = self._inv.get().strip()
+        rec = self._rec.get().strip()
+        if not inv or not rec:
+            messagebox.showwarning("קלט חסר", "נא לבחור שתי תיקיות", parent=self)
+            return
+        self.invoice_folder = inv
+        self.receipt_folder = rec
+        cfg = load_folder_config()
+        if self._save_inv.get():
+            cfg["default_invoice_folder"] = inv
+        if self._save_rec.get():
+            cfg["default_receipt_folder"] = rec
+        if self._save_inv.get() or self._save_rec.get():
+            save_folder_config(cfg)
+        self._confirmed = True
         self.destroy()
 
 
@@ -224,10 +317,11 @@ def type_matches(doc_type: str, expected_types: list) -> bool:
 
 # ── Bot ───────────────────────────────────────────────────────────────────────
 class Bot:
-    def __init__(self, days_back: int, output_folder: Path, log_cb, done_cb,
-                 max_docs: int = 30):
-        self.days_back     = days_back
-        self.output_folder = output_folder
+    def __init__(self, days_back: int, invoice_folder: Path, receipt_folder: Path,
+                 log_cb, done_cb, max_docs: int = 30):
+        self.days_back      = days_back
+        self.invoice_folder = invoice_folder
+        self.receipt_folder = receipt_folder
         self._log_cb       = log_cb
         self._done_cb      = done_cb
         self.max_docs      = max_docs
@@ -281,17 +375,13 @@ class Bot:
 
             # Stage 1 — invoices
             self._emit(f"══════ שלב 1: חשבוניות ({len(invoice_docs)}) ══════")
-            self._process_docs(invoice_docs,
-                               self.output_folder / "חשבוניות לקליטה",
-                               "חשבונית", session)
+            self._process_docs(invoice_docs, self.invoice_folder, "חשבונית", session)
             if self.stop_event.is_set():
                 return
 
             # Stage 2 — receipts
             self._emit(f"══════ שלב 2: קבלות ({len(receipt_docs)}) ══════")
-            self._process_docs(receipt_docs,
-                               self.output_folder / "קבלות",
-                               "קבלה", session)
+            self._process_docs(receipt_docs, self.receipt_folder, "קבלה", session)
 
             self._logout()
             self._save_reports()
@@ -310,7 +400,7 @@ class Bot:
     # ── browser ───────────────────────────────────────────────────────────────
     def _start_browser(self):
         self._emit("פותח Chrome…")
-        dl_tmp = self.output_folder / "_dl_tmp"
+        dl_tmp = self.invoice_folder / "_dl_tmp"
         # Clear any leftover files from previous runs so detection works cleanly
         if dl_tmp.exists():
             for f in dl_tmp.iterdir():
@@ -361,7 +451,7 @@ class Bot:
 
     def _shot(self, name: str):
         try:
-            d = self.output_folder / "logs" / "diag"
+            d = self.invoice_folder / "logs" / "diag"
             d.mkdir(parents=True, exist_ok=True)
             self.driver.save_screenshot(
                 str(d / f"{name}_{datetime.now().strftime('%H%M%S')}.png")
@@ -666,7 +756,7 @@ class Bot:
 
     # ── reports ───────────────────────────────────────────────────────────────
     def _save_reports(self):
-        rep_dir = self.output_folder / "חשבוניות לקליטה"
+        rep_dir = self.invoice_folder
         rep_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
 
@@ -680,7 +770,8 @@ class Bot:
             # Meta
             doc.add_paragraph(f"תאריך הפעלה: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
             doc.add_paragraph(f"ימים אחורה: {self.days_back}")
-            doc.add_paragraph(f"תיקיית פלט: {self.output_folder}")
+            doc.add_paragraph(f"תיקיית חשבוניות: {self.invoice_folder}")
+            doc.add_paragraph(f"תיקיית קבלות:    {self.receipt_folder}")
             doc.add_paragraph("─" * 60)
             doc.add_paragraph("")
             # Log lines
@@ -819,17 +910,6 @@ class App(tk.Tk):
                      values=["10", "20", "30", "45", "60", "100"],
                      state="readonly", width=8).grid(row=1, column=1, sticky="w", **pad)
 
-        tk.Label(top, text="תיקיית פלט:").grid(row=2, column=0, sticky="e", **pad)
-        self._folder = tk.StringVar(
-            value=str(Path.home() / "Desktop")
-        )
-        tk.Entry(top, textvariable=self._folder, width=44).grid(
-            row=2, column=1, sticky="w", **pad
-        )
-        tk.Button(top, text="…", width=3, command=self._browse).grid(
-            row=2, column=2, padx=(0, 8)
-        )
-
         # Buttons
         bf = tk.Frame(self)
         bf.pack(fill="x", padx=10, pady=8)
@@ -869,11 +949,6 @@ class App(tk.Tk):
         tk.Label(self, textvariable=self._status, anchor="w",
                  relief="sunken", bd=1).pack(fill="x", side="bottom")
 
-    def _browse(self):
-        d = filedialog.askdirectory(title="בחר תיקיית פלט")
-        if d:
-            self._folder.set(d)
-
     def _on_run(self):
         if not SELENIUM_OK:
             messagebox.showerror(
@@ -895,11 +970,16 @@ class App(tk.Tk):
             if not u or not p:
                 return
 
+        dlg = FolderDialog(self)
+        if not dlg._confirmed:
+            return
+
         self._clear_log()
         self._set_running(True)
         self._bot = Bot(
             days_back=days,
-            output_folder=Path(self._folder.get()),
+            invoice_folder=Path(dlg.invoice_folder),
+            receipt_folder=Path(dlg.receipt_folder),
             log_cb=self._append,
             done_cb=self._on_done,
             max_docs=int(self._max_docs.get()),
