@@ -799,13 +799,12 @@ class Bot:
                 elif "[WARN]" in line:
                     run.font.color.rgb = RGBColor(0xE6, 0x5C, 0x00)
             doc.save(str(doc_path))
-            self._emit(f'ד"ח פעולות → {doc_path}')
-            # Open in LibreOffice Writer
-            import subprocess
-            subprocess.Popen([
-                r"C:\Program Files\LibreOffice\program\soffice.exe",
-                "--writer", str(doc_path)
-            ])
+            self._emit(f'ד״ח פעולות → {doc_path}')
+            import os as _os
+            try:
+                _os.startfile(str(doc_path))
+            except Exception:
+                pass
         else:
             # Fallback to plain text if python-docx not available
             txt_path = rep_dir / f'ד״ח פעולות {ts}.txt'
