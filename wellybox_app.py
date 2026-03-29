@@ -756,7 +756,7 @@ class Bot:
 
     # ── reports ───────────────────────────────────────────────────────────────
     def _save_reports(self):
-        rep_dir = self.invoice_folder
+        rep_dir = self.invoice_folder / "דוחות"
         rep_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
 
@@ -786,7 +786,7 @@ class Bot:
                 elif "[WARN]" in line:
                     run.font.color.rgb = RGBColor(0xE6, 0x5C, 0x00)
             doc.save(str(doc_path))
-            self._emit(f"End Report → {doc_path.name}")
+            self._emit(f"End Report → {doc_path}")
             # Open in LibreOffice Writer
             import subprocess
             subprocess.Popen([
@@ -803,7 +803,7 @@ class Bot:
                 f.write("=" * 60 + "\n\n")
                 for line in self._lines:
                     f.write(line + "\n")
-            self._emit(f"End Report → {txt_path.name}")
+            self._emit(f"End Report → {txt_path}")
 
         if not OPENPYXL_OK:
             return
@@ -869,7 +869,7 @@ class Bot:
 
         xls_path = rep_dir / f"Report {ts}.xlsx"
         wb.save(xls_path)
-        self._emit(f"Excel Report → {xls_path.name}")
+        self._emit(f"Excel Report → {xls_path}")
 
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
