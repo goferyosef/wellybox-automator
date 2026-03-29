@@ -771,14 +771,14 @@ class Bot:
     def _save_reports(self):
         rep_dir = self.invoice_folder / "דוחות"
         rep_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        ts = datetime.now().strftime("%d.%m.%Y")
 
-        # End Report — LibreOffice Writer (.docx)
-        doc_path = rep_dir / f"End Report {ts}.docx"
+        # ד"ח פעולות — LibreOffice Writer (.docx)
+        doc_path = rep_dir / f'ד"ח פעולות {ts}.docx'
         if DOCX_OK:
             doc = Document()
             # Title
-            title = doc.add_heading("WellyBox — End Report", level=1)
+            title = doc.add_heading('WellyBox — ד"ח פעולות', level=1)
             title.alignment = WD_ALIGN_PARAGRAPH.CENTER
             # Meta
             doc.add_paragraph(f"תאריך הפעלה: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
@@ -799,7 +799,7 @@ class Bot:
                 elif "[WARN]" in line:
                     run.font.color.rgb = RGBColor(0xE6, 0x5C, 0x00)
             doc.save(str(doc_path))
-            self._emit(f"End Report → {doc_path}")
+            self._emit(f'ד"ח פעולות → {doc_path}')
             # Open in LibreOffice Writer
             import subprocess
             subprocess.Popen([
@@ -808,15 +808,15 @@ class Bot:
             ])
         else:
             # Fallback to plain text if python-docx not available
-            txt_path = rep_dir / f"End Report {ts}.txt"
+            txt_path = rep_dir / f'ד"ח פעולות {ts}.txt'
             with open(txt_path, "w", encoding="utf-8") as f:
-                f.write("WellyBox — End Report\n")
+                f.write('WellyBox — ד"ח פעולות\n')
                 f.write(f"תאריך הפעלה: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n")
                 f.write(f"ימים אחורה : {self.days_back}\n")
                 f.write("=" * 60 + "\n\n")
                 for line in self._lines:
                     f.write(line + "\n")
-            self._emit(f"End Report → {txt_path}")
+            self._emit(f'ד"ח פעולות → {txt_path}')
 
         if not OPENPYXL_OK:
             return
@@ -824,7 +824,7 @@ class Bot:
         # Excel colored report
         wb  = openpyxl.Workbook()
         ws  = wb.active
-        ws.title = "Report"
+        ws.title = 'דו"ח הורדות'
 
         # Header row
         headers = ["#", "ספק", "תאריך", "סוג מסמך", "סטטוס", "שם קובץ", "הערה"]
@@ -880,9 +880,9 @@ class Bot:
                 w = max((len(str(c.value or "")) for c in col), default=0)
                 sheet.column_dimensions[get_column_letter(col[0].column)].width = min(w + 4, 55)
 
-        xls_path = rep_dir / f"Report {ts}.xlsx"
+        xls_path = rep_dir / f'דו"ח הורדות {ts}.xlsx'
         wb.save(xls_path)
-        self._emit(f"Excel Report → {xls_path}")
+        self._emit(f'דו"ח הורדות → {xls_path}')
 
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
