@@ -743,7 +743,7 @@ class Bot:
                 self.results.append(result)
                 continue
 
-            base_name = f"{vendor} {date_str}" + (f" מס{doc_num}" if doc_num else "")
+            base_name = f"{vendor} {date_str}"
             filename  = f"{base_name}.pdf"
             dest_path = dest_folder / filename
 
@@ -772,8 +772,11 @@ class Bot:
                     result.note     = _join_note(result.note, 'קובץ זהה')
                     self.results.append(result)
                     continue
-                # Different content — find a free name with a counter suffix
+                # Different content — use doc_num as disambiguator, fall back to counter
                 original_name = filename
+                if doc_num:
+                    filename  = f"{base_name} מס{doc_num}.pdf"
+                    dest_path = dest_folder / filename
                 counter = 2
                 while dest_path.exists():
                     filename  = f"{base_name} ({counter}).pdf"
@@ -986,6 +989,12 @@ class App(tk.Tk):
         super().__init__()
         self.title(APP_NAME)
         self.resizable(False, False)
+        _icon = Path(__file__).parent / "wellybox_icon.ico"
+        if _icon.exists():
+            try:
+                self.iconbitmap(str(_icon))
+            except Exception:
+                pass
         self._bot = None
         self._build_ui()
         # Restore persisted mark-as-saved preference
@@ -1029,7 +1038,7 @@ class App(tk.Tk):
         mark_frame = tk.Frame(top)
         mark_frame.grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 0))
         tk.Checkbutton(
-            mark_frame, text="לציין כנשמר?",
+            mark_frame, text="?האם להחליף את הסטטוס ל"נשמר"",
             variable=self._mark_saved, command=self._on_mark_saved_toggle,
         ).pack(side="left")
         tk.Checkbutton(
