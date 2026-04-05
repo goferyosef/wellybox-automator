@@ -667,8 +667,9 @@ class Bot:
     def _process_docs(self, docs: list, dest_folder: Path,
                       stage_name: str, session) -> None:
         dest_folder.mkdir(parents=True, exist_ok=True)
-        dl_stat  = f"downloaded_{'invoice' if stage_name == 'חשבונית' else 'receipt'}"
-        dup_stat = f"dup_{'invoice' if stage_name == 'חשבונית' else 'receipt'}"
+        dl_stat        = f"downloaded_{'invoice' if stage_name == 'חשבונית' else 'receipt'}"
+        dup_stat       = f"dup_{'invoice' if stage_name == 'חשבונית' else 'receipt'}"
+        collision_stat = f"collision_renamed_{'invoice' if stage_name == 'חשבונית' else 'receipt'}"
 
         for idx, doc in enumerate(docs, 1):
             if self.stop_event.is_set():
@@ -734,16 +735,20 @@ class Bot:
                     self.results.append(result)
                     continue
                 # Different content — find a free name with a counter suffix
+                original_name = filename
                 counter = 2
                 while dest_path.exists():
                     filename  = f"{base_name} ({counter}).pdf"
                     dest_path = dest_folder / filename
                     counter  += 1
                 self._emit(f"  #{idx}: תוכן שונה, שומר כ־{filename}")
+                result.status = collision_stat
+                result.note   = f"שם מקורי: {original_name} — קובץ שונה, הוסף מזהה"
+            else:
+                result.status = dl_stat
 
             try:
                 dest_path.write_bytes(new_content)
-                result.status   = dl_stat
                 result.filename = filename
                 self._emit(f"  ✓ {filename}")
             except Exception as e:
@@ -859,20 +864,24 @@ class Bot:
             c.font = hdr_font
 
         STATUS_COLOR = {
-            "downloaded_invoice": COLOR_GREEN,
-            "dup_invoice":        COLOR_RED,
-            "downloaded_receipt": COLOR_BLUE,
-            "dup_receipt":        COLOR_YELLOW,
-            "skipped":            COLOR_GREY,
-            "error":              COLOR_ORANGE,
+            "downloaded_invoice":        COLOR_GREEN,
+            "dup_invoice":               COLOR_RED,
+            "downloaded_receipt":        COLOR_BLUE,
+            "dup_receipt":               COLOR_YELLOW,
+            "collision_renamed_invoice": COLOR_YELLOW,
+            "collision_renamed_receipt": COLOR_YELLOW,
+            "skipped":                   COLOR_GREY,
+            "error":                     COLOR_ORANGE,
         }
         STATUS_HE = {
-            "downloaded_invoice": "הורד — חשבוניות",
-            "dup_invoice":        "כפול — דלג (חשבוניות)",
-            "downloaded_receipt": "הורד — קבלות",
-            "dup_receipt":        "כפול — דלג (קבלות)",
-            "skipped":            "דלג",
-            "error":              "שגיאה",
+            "downloaded_invoice":        "הורד — חשבוניות",
+            "dup_invoice":               "כפול — דלג (חשבוניות)",
+            "downloaded_receipt":        "הורד — קבלות",
+            "dup_receipt":               "כפול — דלג (קבלות)",
+            "collision_renamed_invoice": "התנגשות שמות — הורד עם מזהה (חשבוניות)",
+            "collision_renamed_receipt": "התנגשות שמות — הורד עם מזהה (קבלות)",
+            "skipped":                   "דלג",
+            "error":                     "שגיאה",
         }
 
         for r in self.results:
@@ -891,6 +900,7 @@ class Bot:
             (COLOR_RED,    "קובץ זהה קיים בחשבוניות לקליטה — דלג"),
             (COLOR_BLUE,   "הורד לתיקיית קבלות"),
             (COLOR_YELLOW, "קובץ זהה קיים בקבלות — דלג"),
+            (COLOR_YELLOW, "התנגשות שמות — קבצים שונים, הורד עם מזהה מסמך (חשבונית/קבלה)"),
             (COLOR_GREY,   "דלג (סוג/תאריך לא תואם)"),
             (COLOR_ORANGE, "שגיאה"),
         ], 1):
