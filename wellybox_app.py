@@ -88,12 +88,13 @@ KNOWN_LABELS  = {
     "חבר צוות", "מקור", "שולח האימייל",
 }
 
-COLOR_GREEN  = "C8E6C9"
-COLOR_RED    = "FFCDD2"
-COLOR_BLUE   = "BBDEFB"
-COLOR_YELLOW = "FFF9C4"
-COLOR_GREY   = "EEEEEE"
-COLOR_ORANGE = "FFE0B2"
+COLOR_GREEN    = "C8E6C9"
+COLOR_RED      = "FFCDD2"
+COLOR_BLUE     = "BBDEFB"
+COLOR_YELLOW   = "FFF9C4"
+COLOR_GREY     = "EEEEEE"
+COLOR_ORANGE   = "FFE0B2"
+COLOR_LAVENDER = "E8EAF6"   # skipped because WellyBox status = saved
 
 CONFIG_PATH = Path(__file__).parent / "wellybox_config.json"
 
@@ -670,6 +671,7 @@ class Bot:
         dl_stat        = f"downloaded_{'invoice' if stage_name == 'חשבונית' else 'receipt'}"
         dup_stat       = f"dup_{'invoice' if stage_name == 'חשבונית' else 'receipt'}"
         collision_stat = f"collision_renamed_{'invoice' if stage_name == 'חשבונית' else 'receipt'}"
+        _status_field_logged = False   # log raw status field once per stage for diagnostics
 
         for idx, doc in enumerate(docs, 1):
             if self.stop_event.is_set():
@@ -691,12 +693,31 @@ class Bot:
                             or doc.get('number') or doc.get('doc_num') or '')
             doc_num      = safe_name(str(doc_num_raw)).strip() if doc_num_raw else ''
 
+            # WellyBox card status — try common field names
+            wb_status = (doc.get('status') or doc.get('review_status')
+                         or doc.get('doc_status') or doc.get('card_status') or '').lower()
+            if not _status_field_logged:
+                raw_keys = [k for k in ('status','review_status','doc_status','card_status')
+                            if k in doc]
+                self._emit(f"  [diag] סטטוס שדה: {raw_keys} → '{wb_status}'")
+                _status_field_logged = True
+
             result = CardResult(
                 idx=idx,
                 vendor=vendor,
                 doc_date=date_str,
                 doc_type=doc_type,
             )
+
+            # Skip "saved" cards; process "new" and unknown statuses
+            if wb_status == 'saved':
+                self._emit(f"  #{idx}: {vendor} {date_str} — סטטוס 'saved', דלג")
+                result.status = 'skipped_saved'
+                result.note   = 'WellyBox: saved'
+                self.results.append(result)
+                continue
+            if wb_status and wb_status != 'new':
+                self._emit(f"  #{idx}: {vendor} {date_str} — סטטוס לא מוכר '{wb_status}', מעבד בכל זאת", "WARN")
 
             if not download_url:
                 self._emit(f"  #{idx}: {vendor} {date_str} — אין קישור הורדה", "WARN")
@@ -870,6 +891,7 @@ class Bot:
             "dup_receipt":               COLOR_YELLOW,
             "collision_renamed_invoice": COLOR_YELLOW,
             "collision_renamed_receipt": COLOR_YELLOW,
+            "skipped_saved":             COLOR_LAVENDER,
             "skipped":                   COLOR_GREY,
             "error":                     COLOR_ORANGE,
         }
@@ -880,6 +902,7 @@ class Bot:
             "dup_receipt":               "כפול — דלג (קבלות)",
             "collision_renamed_invoice": "התנגשות שמות — הורד עם מזהה (חשבוניות)",
             "collision_renamed_receipt": "התנגשות שמות — הורד עם מזהה (קבלות)",
+            "skipped_saved":             "דלג — כרטיס מסומן כ-Saved ב-WellyBox",
             "skipped":                   "דלג",
             "error":                     "שגיאה",
         }
@@ -896,13 +919,14 @@ class Bot:
         # Legend
         lg = wb.create_sheet("Legend")
         for i, (color, desc) in enumerate([
-            (COLOR_GREEN,  "הורד לתיקיית חשבוניות לקליטה"),
-            (COLOR_RED,    "קובץ זהה קיים בחשבוניות לקליטה — דלג"),
-            (COLOR_BLUE,   "הורד לתיקיית קבלות"),
-            (COLOR_YELLOW, "קובץ זהה קיים בקבלות — דלג"),
-            (COLOR_YELLOW, "התנגשות שמות — קבצים שונים, הורד עם מזהה מסמך (חשבונית/קבלה)"),
-            (COLOR_GREY,   "דלג (סוג/תאריך לא תואם)"),
-            (COLOR_ORANGE, "שגיאה"),
+            (COLOR_GREEN,    "הורד לתיקיית חשבוניות לקליטה"),
+            (COLOR_RED,      "קובץ זהה קיים בחשבוניות לקליטה — דלג"),
+            (COLOR_BLUE,     "הורד לתיקיית קבלות"),
+            (COLOR_YELLOW,   "קובץ זהה קיים בקבלות — דלג"),
+            (COLOR_YELLOW,   "התנגשות שמות — קבצים שונים, הורד עם מזהה מסמך (חשבונית/קבלה)"),
+            (COLOR_LAVENDER, "דלג — כרטיס מסומן כ-Saved ב-WellyBox (לא חדש)"),
+            (COLOR_GREY,     "דלג (סוג/תאריך לא תואם, אין קישור)"),
+            (COLOR_ORANGE,   "שגיאה"),
         ], 1):
             lg.cell(row=i, column=1).fill = PatternFill("solid", fgColor=color)
             lg.cell(row=i, column=2, value=desc)
