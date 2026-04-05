@@ -685,10 +685,10 @@ class Bot:
             vendor = safe_name(doc.get('vendor_title') or 'לא ידוע')
 
             # Issued date = date printed on the document (תאריך ע"ג המסמך)
-            # Never fall back to source_date (upload date) — use "??.??.????" if unknown
+            # Never fall back to source_date or doc_date (upload/processing dates) — use "??.??.????" if unknown
             doc_date_raw = (doc.get('issue_date') or doc.get('issued_date')
                             or doc.get('document_date') or doc.get('invoice_date')
-                            or doc.get('receipt_date') or doc.get('doc_date') or '')
+                            or doc.get('receipt_date') or '')
             doc_dt = None
             if doc_date_raw:
                 try:
@@ -727,7 +727,7 @@ class Bot:
             )
 
             # Skip "saved" cards; process "new" and unknown statuses
-            if wb_status == 'saved':
+            if wb_status in ('saved', 'נשמר'):
                 self._emit(f"  #{idx}: {vendor} {date_str} — סטטוס 'saved', דלג")
                 result.status = 'skipped_saved'
                 result.note   = 'WellyBox: saved'
@@ -1038,7 +1038,7 @@ class App(tk.Tk):
         mark_frame = tk.Frame(top)
         mark_frame.grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 0))
         tk.Checkbutton(
-            mark_frame, text="?האם להחליף את הסטטוס ל"נשמר"",
+            mark_frame, text='?האם להחליף את הסטטוס ל"נשמר"',
             variable=self._mark_saved, command=self._on_mark_saved_toggle,
         ).pack(side="left")
         tk.Checkbutton(
