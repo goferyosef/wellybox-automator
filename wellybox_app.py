@@ -319,16 +319,17 @@ def type_matches(doc_type: str, expected_types: list) -> bool:
 # ── Bot ───────────────────────────────────────────────────────────────────────
 class Bot:
     def __init__(self, days_back: int, invoice_folder: Path, receipt_folder: Path,
-                 log_cb, done_cb, max_docs: int = 30):
+                 log_cb, done_cb, max_docs: int = 30, mark_as_saved: bool = False):
         self.days_back      = days_back
         self.invoice_folder = invoice_folder
         self.receipt_folder = receipt_folder
-        self._log_cb       = log_cb
-        self._done_cb      = done_cb
-        self.max_docs      = max_docs
-        self.driver        = None
-        self.stop_event    = threading.Event()
-        self.results       = []
+        self._log_cb        = log_cb
+        self._done_cb       = done_cb
+        self.max_docs       = max_docs
+        self.mark_as_saved  = mark_as_saved
+        self.driver         = None
+        self.stop_event     = threading.Event()
+        self.results        = []
         self._lines        = []
         self._cutoff       = (datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
                               - timedelta(days=days_back - 1))
@@ -772,6 +773,8 @@ class Bot:
                 dest_path.write_bytes(new_content)
                 result.filename = filename
                 self._emit(f"  ✓ {filename}")
+                if self.mark_as_saved:
+                    self._mark_doc_saved(session, doc)
             except Exception as e:
                 self._emit(f"  #{idx}: שגיאת כתיבה — {e}", "ERROR")
                 result.status = 'error'
@@ -816,6 +819,25 @@ class Bot:
 
         # Browser will be closed immediately after — session ends regardless
         self._emit("  סגירת דפדפן תנתק את החשבון")
+
+    # ── mark doc as saved in WellyBox ─────────────────────────────────────────
+    def _mark_doc_saved(self, session, doc):
+        doc_id = doc.get('id') or doc.get('_id') or doc.get('doc_id')
+        if not doc_id:
+            self._emit("  [diag] לא נמצא מזהה מסמך לסימון כנשמר", "WARN")
+            return
+        try:
+            resp = session.patch(
+                f"https://api.app.wellybox.com/api/v1/docs/{doc_id}",
+                json={"status": "saved"},
+                timeout=10,
+            )
+            if resp.ok:
+                self._emit(f"  ✓ סומן כנשמר (id={doc_id})")
+            else:
+                self._emit(f"  [WARN] סימון כנשמר נכשל: {resp.status_code} {resp.text[:120]}", "WARN")
+        except Exception as e:
+            self._emit(f"  [WARN] שגיאה בסימון כנשמר: {e}", "WARN")
 
     # ── reports ───────────────────────────────────────────────────────────────
     def _save_reports(self):
@@ -950,6 +972,11 @@ class App(tk.Tk):
         self.resizable(False, False)
         self._bot = None
         self._build_ui()
+        # Restore persisted mark-as-saved preference
+        cfg = load_folder_config()
+        if cfg.get('remember_mark_saved', False):
+            self._remember_mark.set(True)
+            self._mark_saved.set(cfg.get('mark_as_saved', False))
         # Show ready message — do NOT auto-start anything
         self.after(200, self._show_welcome)
 
@@ -979,6 +1006,21 @@ class App(tk.Tk):
         ttk.Combobox(top, textvariable=self._max_docs,
                      values=["10", "20", "30", "45", "60", "100"],
                      state="readonly", width=8).grid(row=1, column=1, sticky="w", **pad)
+
+        # Mark-as-saved option
+        self._mark_saved   = tk.BooleanVar(value=False)
+        self._remember_mark = tk.BooleanVar(value=False)
+        mark_frame = tk.Frame(top)
+        mark_frame.grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 0))
+        tk.Checkbutton(
+            mark_frame, text="לציין כנשמר?",
+            variable=self._mark_saved, command=self._on_mark_saved_toggle,
+        ).pack(side="left")
+        tk.Checkbutton(
+            mark_frame, text="זכור העדפה",
+            variable=self._remember_mark, command=self._on_remember_toggle,
+            fg="#666666",
+        ).pack(side="left", padx=(16, 0))
 
         # Buttons
         bf = tk.Frame(self)
@@ -1053,6 +1095,7 @@ class App(tk.Tk):
             log_cb=self._append,
             done_cb=self._on_done,
             max_docs=int(self._max_docs.get()),
+            mark_as_saved=self._mark_saved.get(),
         )
         self._bot.start()
 
@@ -1060,6 +1103,19 @@ class App(tk.Tk):
         if self._bot:
             self._bot.stop()
         self._status.set("עוצר…")
+
+    def _on_mark_saved_toggle(self):
+        if self._remember_mark.get():
+            self._persist_mark_pref()
+
+    def _on_remember_toggle(self):
+        self._persist_mark_pref()
+
+    def _persist_mark_pref(self):
+        cfg = load_folder_config()
+        cfg['remember_mark_saved'] = self._remember_mark.get()
+        cfg['mark_as_saved']       = self._mark_saved.get()
+        save_folder_config(cfg)
 
     def _on_creds(self):
         dlg = CredsDialog(self)
