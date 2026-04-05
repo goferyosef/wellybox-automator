@@ -679,7 +679,13 @@ class Bot:
                 break
 
             vendor = safe_name(doc.get('vendor_title') or 'לא ידוע')
-            doc_date_raw = doc.get('doc_date') or doc.get('source_date') or ''
+
+            # Issued date = date printed on the document (תאריך ע"ג המסמך)
+            # Priority: issue_date / issued_date > doc_date > source_date (upload date)
+            doc_date_raw = (doc.get('issue_date') or doc.get('issued_date')
+                            or doc.get('document_date') or doc.get('invoice_date')
+                            or doc.get('receipt_date') or doc.get('doc_date')
+                            or doc.get('source_date') or '')
             doc_dt = None
             if doc_date_raw:
                 try:
@@ -698,9 +704,14 @@ class Bot:
             wb_status = (doc.get('status') or doc.get('review_status')
                          or doc.get('doc_status') or doc.get('card_status') or '').lower()
             if not _status_field_logged:
-                raw_keys = [k for k in ('status','review_status','doc_status','card_status')
-                            if k in doc]
-                self._emit(f"  [diag] סטטוס שדה: {raw_keys} → '{wb_status}'")
+                date_fields = {k: doc[k] for k in
+                               ('issue_date','issued_date','document_date','invoice_date',
+                                'receipt_date','doc_date','source_date','created_at')
+                               if k in doc}
+                self._emit(f"  [diag] שדות תאריך: {date_fields}")
+                status_keys = [k for k in ('status','review_status','doc_status','card_status')
+                               if k in doc]
+                self._emit(f"  [diag] סטטוס שדה: {status_keys} → '{wb_status}'")
                 _status_field_logged = True
 
             result = CardResult(
