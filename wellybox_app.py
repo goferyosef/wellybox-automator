@@ -307,6 +307,10 @@ def fmt_date_il(dt: datetime) -> str:
 def safe_name(s: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', '', s).strip()
 
+def _join_note(existing: str, addition: str) -> str:
+    """Append addition to existing note, separated by ' | '."""
+    return f"{existing} | {addition}" if existing else addition
+
 def type_matches(doc_type: str, expected_types: list) -> bool:
     """Exact match ignoring spaces and slash variants — prevents 'קבלה' matching 'חשבונית מס / קבלה'."""
     dt = re.sub(r'[\s/]+', '', doc_type).strip()
@@ -681,18 +685,18 @@ class Bot:
             vendor = safe_name(doc.get('vendor_title') or 'לא ידוע')
 
             # Issued date = date printed on the document (תאריך ע"ג המסמך)
-            # Priority: issue_date / issued_date > doc_date > source_date (upload date)
+            # Never fall back to source_date (upload date) — use "??.??.????" if unknown
             doc_date_raw = (doc.get('issue_date') or doc.get('issued_date')
                             or doc.get('document_date') or doc.get('invoice_date')
-                            or doc.get('receipt_date') or doc.get('doc_date')
-                            or doc.get('source_date') or '')
+                            or doc.get('receipt_date') or doc.get('doc_date') or '')
             doc_dt = None
             if doc_date_raw:
                 try:
                     doc_dt = datetime.fromisoformat(doc_date_raw[:10])
                 except Exception:
                     doc_dt = parse_date(doc_date_raw)
-            date_str     = fmt_date_il(doc_dt) if doc_dt else 'לא ידוע'
+            date_str      = fmt_date_il(doc_dt) if doc_dt else '??.??.????'
+            date_unknown  = doc_dt is None
             doc_type     = doc.get('doc_type') or ''
             download_url = doc.get('download_pdf_url') or ''
             # Strategy 4: enrich filename with doc number when available
@@ -719,6 +723,7 @@ class Bot:
                 vendor=vendor,
                 doc_date=date_str,
                 doc_type=doc_type,
+                note='תאריך לא ברור' if date_unknown else '',
             )
 
             # Skip "saved" cards; process "new" and unknown statuses
@@ -764,7 +769,7 @@ class Bot:
                     self._emit(f"  #{idx}: {filename} — זהה לקיים, דלג")
                     result.status   = dup_stat
                     result.filename = filename
-                    result.note     = 'קובץ זהה'
+                    result.note     = _join_note(result.note, 'קובץ זהה')
                     self.results.append(result)
                     continue
                 # Different content — find a free name with a counter suffix
@@ -776,7 +781,7 @@ class Bot:
                     counter  += 1
                 self._emit(f"  #{idx}: תוכן שונה, שומר כ־{filename}")
                 result.status = collision_stat
-                result.note   = f"שם מקורי: {original_name} — קובץ שונה, הוסף מזהה"
+                result.note   = _join_note(result.note, f"שם מקורי: {original_name} — קובץ שונה, הוסף מזהה")
             else:
                 result.status = dl_stat
 
@@ -789,7 +794,7 @@ class Bot:
             except Exception as e:
                 self._emit(f"  #{idx}: שגיאת כתיבה — {e}", "ERROR")
                 result.status = 'error'
-                result.note   = str(e)
+                result.note   = _join_note(result.note, str(e))
 
             self.results.append(result)
 
