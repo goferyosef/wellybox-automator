@@ -685,6 +685,10 @@ class Bot:
             date_str     = fmt_date_il(doc_dt) if doc_dt else 'לא ידוע'
             doc_type     = doc.get('doc_type') or ''
             download_url = doc.get('download_pdf_url') or ''
+            # Strategy 4: enrich filename with doc number when available
+            doc_num_raw  = (doc.get('doc_number') or doc.get('invoice_number')
+                            or doc.get('number') or doc.get('doc_num') or '')
+            doc_num      = safe_name(str(doc_num_raw)).strip() if doc_num_raw else ''
 
             result = CardResult(
                 idx=idx,
@@ -700,30 +704,50 @@ class Bot:
                 self.results.append(result)
                 continue
 
-            filename  = f"{vendor} {date_str}.pdf"
+            base_name = f"{vendor} {date_str}" + (f" מס{doc_num}" if doc_num else "")
+            filename  = f"{base_name}.pdf"
             dest_path = dest_folder / filename
 
-            if dest_path.exists():
-                self._emit(f"  #{idx}: {filename} — כבר קיים, דלג")
-                result.status   = dup_stat
-                result.filename = filename
-                result.note     = 'קובץ קיים'
+            # Download content to memory so we can compare before writing
+            self._emit(f"  #{idx}: מוריד {filename}…")
+            try:
+                resp = session.get(download_url, timeout=60)
+                resp.raise_for_status()
+                new_content = resp.content
+            except Exception as e:
+                self._emit(f"  #{idx}: שגיאת הורדה — {e}", "ERROR")
+                result.status = 'error'
+                result.note   = str(e)
                 self.results.append(result)
                 continue
 
-            self._emit(f"  #{idx}: מוריד {filename}…")
+            if dest_path.exists():
+                # Strategy 3: compare contents — skip only if truly identical
+                import hashlib
+                existing_hash = hashlib.md5(dest_path.read_bytes()).hexdigest()
+                new_hash      = hashlib.md5(new_content).hexdigest()
+                if existing_hash == new_hash:
+                    self._emit(f"  #{idx}: {filename} — זהה לקיים, דלג")
+                    result.status   = dup_stat
+                    result.filename = filename
+                    result.note     = 'קובץ זהה'
+                    self.results.append(result)
+                    continue
+                # Different content — find a free name with a counter suffix
+                counter = 2
+                while dest_path.exists():
+                    filename  = f"{base_name} ({counter}).pdf"
+                    dest_path = dest_folder / filename
+                    counter  += 1
+                self._emit(f"  #{idx}: תוכן שונה, שומר כ־{filename}")
+
             try:
-                resp = session.get(download_url, timeout=60, stream=True)
-                resp.raise_for_status()
-                with open(dest_path, 'wb') as fh:
-                    for chunk in resp.iter_content(chunk_size=8192):
-                        if chunk:
-                            fh.write(chunk)
+                dest_path.write_bytes(new_content)
                 result.status   = dl_stat
                 result.filename = filename
                 self._emit(f"  ✓ {filename}")
             except Exception as e:
-                self._emit(f"  #{idx}: שגיאת הורדה — {e}", "ERROR")
+                self._emit(f"  #{idx}: שגיאת כתיבה — {e}", "ERROR")
                 result.status = 'error'
                 result.note   = str(e)
 
