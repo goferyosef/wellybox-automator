@@ -685,10 +685,11 @@ class Bot:
             vendor = safe_name(doc.get('vendor_title') or 'לא ידוע')
 
             # Issued date = date printed on the document (תאריך ע"ג המסמך)
-            # Never fall back to source_date or doc_date (upload/processing dates) — use "??.??.????" if unknown
+            # extracted_date = date WellyBox OCR-extracted from the document
+            # Never fall back to doc_date/source_date (upload dates) — use "??.??.????" if unknown
             doc_date_raw = (doc.get('issue_date') or doc.get('issued_date')
                             or doc.get('document_date') or doc.get('invoice_date')
-                            or doc.get('receipt_date') or '')
+                            or doc.get('receipt_date') or doc.get('extracted_date') or '')
             doc_dt = None
             if doc_date_raw:
                 try:
@@ -708,14 +709,6 @@ class Bot:
             wb_status = (doc.get('status') or doc.get('review_status')
                          or doc.get('doc_status') or doc.get('card_status') or '').lower()
             if not _status_field_logged:
-                date_fields = {k: doc[k] for k in
-                               ('issue_date','issued_date','document_date','invoice_date',
-                                'receipt_date','doc_date','source_date','created_at')
-                               if k in doc}
-                self._emit(f"  [diag] שדות תאריך: {date_fields}")
-                status_keys = [k for k in ('status','review_status','doc_status','card_status')
-                               if k in doc]
-                self._emit(f"  [diag] סטטוס שדה: {status_keys} → '{wb_status}'")
                 _status_field_logged = True
 
             result = CardResult(
@@ -726,15 +719,16 @@ class Bot:
                 note='תאריך לא ברור' if date_unknown else '',
             )
 
-            # Skip "saved" cards; process "new" and unknown statuses
-            if wb_status in ('saved', 'נשמר'):
-                self._emit(f"  #{idx}: {vendor} {date_str} — סטטוס 'saved', דלג")
+            # Skip "saved"/"ready" cards; process "new" and unknown statuses
+            if wb_status in ('saved', 'ready', 'נשמר'):
+                self._emit(f"  #{idx}: {vendor} {date_str} — סטטוס '{wb_status}', דלג")
                 result.status = 'skipped_saved'
                 result.note   = 'WellyBox: saved'
                 self.results.append(result)
                 continue
             if wb_status and wb_status != 'new':
                 self._emit(f"  #{idx}: {vendor} {date_str} — סטטוס לא מוכר '{wb_status}', מעבד בכל זאת", "WARN")
+
 
             if not download_url:
                 self._emit(f"  #{idx}: {vendor} {date_str} — אין קישור הורדה", "WARN")
@@ -889,7 +883,15 @@ class Bot:
                     run.font.color.rgb = RGBColor(0xC6, 0x28, 0x28)
                 elif "[WARN]" in line:
                     run.font.color.rgb = RGBColor(0xE6, 0x5C, 0x00)
-            doc.save(str(doc_path))
+            try:
+                doc.save(str(doc_path))
+            except PermissionError:
+                # File is open in Word — save with a unique suffix instead
+                from datetime import datetime as _dt
+                alt_path = rep_dir / f'ד״ח פעולות {ts}_{_dt.now().strftime("%H%M%S")}.docx'
+                doc.save(str(alt_path))
+                doc_path = alt_path
+                self._emit(f'[WARN] הקובץ המקורי נעול — נשמר בשם חלופי', "WARN")
             self._emit(f'ד״ח פעולות → {doc_path}')
             import os as _os
             try:
@@ -979,8 +981,11 @@ class Bot:
                 sheet.column_dimensions[get_column_letter(col[0].column)].width = min(w + 4, 55)
 
         xls_path = rep_dir / f'דו״ח הורדות {ts}.xlsx'
-        wb.save(xls_path)
-        self._emit(f'דו"ח הורדות → {xls_path}')
+        try:
+            wb.save(xls_path)
+            self._emit(f'דו"ח הורדות → {xls_path}')
+        except PermissionError:
+            self._emit(f'[שגיאה] לא ניתן לשמור את הדו"ח — סגור את הקובץ {xls_path.name} ב-Excel ונסה שנית', "ERROR")
 
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
