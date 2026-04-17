@@ -390,7 +390,17 @@ class Bot:
             self._process_docs(receipt_docs, self.receipt_folder, "קבלה", session)
 
             self._logout()
-            self._save_reports()
+            try:
+                self._save_reports()
+            except Exception as rep_exc:
+                self._emit(f"שגיאה ביצירת דוחות: {rep_exc}", "ERROR")
+                self._emit(traceback.format_exc(), "ERROR")
+                # Show a popup so the error is impossible to miss
+                import tkinter.messagebox as _mb
+                _mb.showerror(
+                    "שגיאה ביצירת דוחות",
+                    f"הדוחות לא נשמרו — ראה פרטים בלוג:\n\n{rep_exc}",
+                )
             self._emit("✓ סיום בהצלחה")
         except Exception as exc:
             self._emit(f"שגיאה כללית: {exc}", "ERROR")
@@ -854,53 +864,13 @@ class Bot:
 
     # ── reports ───────────────────────────────────────────────────────────────
     def _save_reports(self):
-        rep_dir = self.invoice_folder / "דוחות"
+        rep_dir = self.invoice_folder.parent / "דוחות"
         rep_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%d.%m.%Y")
 
-        # ד"ח פעולות — LibreOffice Writer (.docx)
-        doc_path = rep_dir / f'ד״ח פעולות {ts}.docx'
-        if DOCX_OK:
-            doc = Document()
-            # Title
-            title = doc.add_heading('WellyBox — ד"ח פעולות', level=1)
-            title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            # Meta
-            doc.add_paragraph(f"תאריך הפעלה: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-            doc.add_paragraph(f"ימים אחורה: {self.days_back}")
-            doc.add_paragraph(f"תיקיית חשבוניות: {self.invoice_folder}")
-            doc.add_paragraph(f"תיקיית קבלות:    {self.receipt_folder}")
-            doc.add_paragraph("─" * 60)
-            doc.add_paragraph("")
-            # Log lines
-            doc.add_heading("לוג פעולות", level=2)
-            for line in self._lines:
-                p = doc.add_paragraph()
-                run = p.add_run(line)
-                run.font.size = Pt(9)
-                run.font.name = "Courier New"
-                if "[ERROR]" in line:
-                    run.font.color.rgb = RGBColor(0xC6, 0x28, 0x28)
-                elif "[WARN]" in line:
-                    run.font.color.rgb = RGBColor(0xE6, 0x5C, 0x00)
-            try:
-                doc.save(str(doc_path))
-            except PermissionError:
-                # File is open in Word — save with a unique suffix instead
-                from datetime import datetime as _dt
-                alt_path = rep_dir / f'ד״ח פעולות {ts}_{_dt.now().strftime("%H%M%S")}.docx'
-                doc.save(str(alt_path))
-                doc_path = alt_path
-                self._emit(f'[WARN] הקובץ המקורי נעול — נשמר בשם חלופי', "WARN")
-            self._emit(f'ד״ח פעולות → {doc_path}')
-            import os as _os
-            try:
-                _os.startfile(str(doc_path))
-            except Exception:
-                pass
-        else:
-            # Fallback to plain text if python-docx not available
-            txt_path = rep_dir / f'ד״ח פעולות {ts}.txt'
+        # ── Always write plain-text log first as a guaranteed safety net ─────
+        txt_path = rep_dir / f'ד״ח פעולות {ts}.txt'
+        try:
             with open(txt_path, "w", encoding="utf-8") as f:
                 f.write('WellyBox — ד"ח פעולות\n')
                 f.write(f"תאריך הפעלה: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n")
@@ -908,84 +878,132 @@ class Bot:
                 f.write("=" * 60 + "\n\n")
                 for line in self._lines:
                     f.write(line + "\n")
-            self._emit(f'ד"ח פעולות → {txt_path}')
+            self._emit(f'לוג טקסט → {txt_path}')
+        except Exception as e:
+            self._emit(f'[WARN] לא ניתן לשמור לוג טקסט: {e}', "WARN")
+
+        # ── Word report (.docx) ───────────────────────────────────────────────
+        if DOCX_OK:
+            try:
+                doc_path = rep_dir / f'ד״ח פעולות {ts}.docx'
+                doc = Document()
+                title = doc.add_heading('WellyBox — ד"ח פעולות', level=1)
+                title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                doc.add_paragraph(f"תאריך הפעלה: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+                doc.add_paragraph(f"ימים אחורה: {self.days_back}")
+                doc.add_paragraph(f"תיקיית חשבוניות: {self.invoice_folder}")
+                doc.add_paragraph(f"תיקיית קבלות:    {self.receipt_folder}")
+                doc.add_paragraph("─" * 60)
+                doc.add_paragraph("")
+                doc.add_heading("לוג פעולות", level=2)
+                for line in self._lines:
+                    p = doc.add_paragraph()
+                    run = p.add_run(line)
+                    run.font.size = Pt(9)
+                    run.font.name = "Courier New"
+                    if "[ERROR]" in line:
+                        run.font.color.rgb = RGBColor(0xC6, 0x28, 0x28)
+                    elif "[WARN]" in line:
+                        run.font.color.rgb = RGBColor(0xE6, 0x5C, 0x00)
+                try:
+                    doc.save(str(doc_path))
+                except PermissionError:
+                    from datetime import datetime as _dt
+                    alt_path = rep_dir / f'ד״ח פעולות {ts}_{_dt.now().strftime("%H%M%S")}.docx'
+                    doc.save(str(alt_path))
+                    doc_path = alt_path
+                    self._emit(f'[WARN] הקובץ המקורי נעול — נשמר בשם חלופי', "WARN")
+                self._emit(f'ד״ח פעולות → {doc_path}')
+                import os as _os
+                try:
+                    _os.startfile(str(doc_path))
+                except Exception:
+                    pass
+            except Exception as docx_exc:
+                self._emit(f'[WARN] לא ניתן ליצור קובץ Word: {docx_exc}', "WARN")
 
         if not OPENPYXL_OK:
             return
 
-        # Excel colored report
-        wb  = openpyxl.Workbook()
-        ws  = wb.active
-        ws.title = 'דו"ח הורדות'
-
-        # Header row
-        headers = ["#", "ספק", "תאריך", "סוג מסמך", "סטטוס", "שם קובץ", "הערה"]
-        hdr_fill = PatternFill("solid", fgColor="263238")
-        hdr_font = Font(bold=True, color="FFFFFF")
-        for col, h in enumerate(headers, 1):
-            c = ws.cell(row=1, column=col, value=h)
-            c.fill = hdr_fill
-            c.font = hdr_font
-
-        STATUS_COLOR = {
-            "downloaded_invoice":        COLOR_GREEN,
-            "dup_invoice":               COLOR_RED,
-            "downloaded_receipt":        COLOR_BLUE,
-            "dup_receipt":               COLOR_YELLOW,
-            "collision_renamed_invoice": COLOR_YELLOW,
-            "collision_renamed_receipt": COLOR_YELLOW,
-            "skipped_saved":             COLOR_LAVENDER,
-            "skipped":                   COLOR_GREY,
-            "error":                     COLOR_ORANGE,
-        }
-        STATUS_HE = {
-            "downloaded_invoice":        "הורד — חשבוניות",
-            "dup_invoice":               "כפול — דלג (חשבוניות)",
-            "downloaded_receipt":        "הורד — קבלות",
-            "dup_receipt":               "כפול — דלג (קבלות)",
-            "collision_renamed_invoice": "התנגשות שמות — הורד עם מזהה (חשבוניות)",
-            "collision_renamed_receipt": "התנגשות שמות — הורד עם מזהה (קבלות)",
-            "skipped_saved":             "דלג — כרטיס מסומן כ-Saved ב-WellyBox",
-            "skipped":                   "דלג",
-            "error":                     "שגיאה",
-        }
-
-        for r in self.results:
-            row  = ws.max_row + 1
-            fill = PatternFill("solid", fgColor=STATUS_COLOR.get(r.status, COLOR_GREY))
-            vals = [r.idx, r.vendor, r.doc_date, r.doc_type,
-                    STATUS_HE.get(r.status, r.status), r.filename, r.note]
-            for col, v in enumerate(vals, 1):
-                c = ws.cell(row=row, column=col, value=v)
-                c.fill = fill
-
-        # Legend
-        lg = wb.create_sheet("Legend")
-        for i, (color, desc) in enumerate([
-            (COLOR_GREEN,    "הורד לתיקיית חשבוניות לקליטה"),
-            (COLOR_RED,      "קובץ זהה קיים בחשבוניות לקליטה — דלג"),
-            (COLOR_BLUE,     "הורד לתיקיית קבלות"),
-            (COLOR_YELLOW,   "קובץ זהה קיים בקבלות — דלג"),
-            (COLOR_YELLOW,   "התנגשות שמות — קבצים שונים, הורד עם מזהה מסמך (חשבונית/קבלה)"),
-            (COLOR_LAVENDER, "דלג — כרטיס מסומן כ-Saved ב-WellyBox (לא חדש)"),
-            (COLOR_GREY,     "דלג (סוג/תאריך לא תואם, אין קישור)"),
-            (COLOR_ORANGE,   "שגיאה"),
-        ], 1):
-            lg.cell(row=i, column=1).fill = PatternFill("solid", fgColor=color)
-            lg.cell(row=i, column=2, value=desc)
-
-        # Column widths
-        for sheet in [ws, lg]:
-            for col in sheet.columns:
-                w = max((len(str(c.value or "")) for c in col), default=0)
-                sheet.column_dimensions[get_column_letter(col[0].column)].width = min(w + 4, 55)
-
-        xls_path = rep_dir / f'דו״ח הורדות {ts}.xlsx'
+        # ── Excel colored report ─────────────────────────────────────────────
         try:
-            wb.save(xls_path)
-            self._emit(f'דו"ח הורדות → {xls_path}')
-        except PermissionError:
-            self._emit(f'[שגיאה] לא ניתן לשמור את הדו"ח — סגור את הקובץ {xls_path.name} ב-Excel ונסה שנית', "ERROR")
+            wb  = openpyxl.Workbook()
+            ws  = wb.active
+            ws.title = 'דו"ח הורדות'
+
+            # Header row
+            headers = ["#", "ספק", "תאריך", "סוג מסמך", "סטטוס", "שם קובץ", "הערה"]
+            hdr_fill = PatternFill("solid", fgColor="263238")
+            hdr_font = Font(bold=True, color="FFFFFF")
+            for col, h in enumerate(headers, 1):
+                c = ws.cell(row=1, column=col, value=h)
+                c.fill = hdr_fill
+                c.font = hdr_font
+
+            STATUS_COLOR = {
+                "downloaded_invoice":        COLOR_GREEN,
+                "dup_invoice":               COLOR_RED,
+                "downloaded_receipt":        COLOR_BLUE,
+                "dup_receipt":               COLOR_YELLOW,
+                "collision_renamed_invoice": COLOR_YELLOW,
+                "collision_renamed_receipt": COLOR_YELLOW,
+                "skipped_saved":             COLOR_LAVENDER,
+                "skipped":                   COLOR_GREY,
+                "error":                     COLOR_ORANGE,
+            }
+            STATUS_HE = {
+                "downloaded_invoice":        "הורד — חשבוניות",
+                "dup_invoice":               "כפול — דלג (חשבוניות)",
+                "downloaded_receipt":        "הורד — קבלות",
+                "dup_receipt":               "כפול — דלג (קבלות)",
+                "collision_renamed_invoice": "התנגשות שמות — הורד עם מזהה (חשבוניות)",
+                "collision_renamed_receipt": "התנגשות שמות — הורד עם מזהה (קבלות)",
+                "skipped_saved":             "דלג — כרטיס מסומן כ-Saved ב-WellyBox",
+                "skipped":                   "דלג",
+                "error":                     "שגיאה",
+            }
+
+            for r in self.results:
+                row  = ws.max_row + 1
+                fill = PatternFill("solid", fgColor=STATUS_COLOR.get(r.status, COLOR_GREY))
+                vals = [r.idx, r.vendor, r.doc_date, r.doc_type,
+                        STATUS_HE.get(r.status, r.status), r.filename, r.note]
+                for col, v in enumerate(vals, 1):
+                    c = ws.cell(row=row, column=col, value=v)
+                    c.fill = fill
+
+            # Legend
+            lg = wb.create_sheet("Legend")
+            for i, (color, desc) in enumerate([
+                (COLOR_GREEN,    "הורד לתיקיית חשבוניות לקליטה"),
+                (COLOR_RED,      "קובץ זהה קיים בחשבוניות לקליטה — דלג"),
+                (COLOR_BLUE,     "הורד לתיקיית קבלות"),
+                (COLOR_YELLOW,   "קובץ זהה קיים בקבלות — דלג"),
+                (COLOR_YELLOW,   "התנגשות שמות — קבצים שונים, הורד עם מזהה מסמך (חשבונית/קבלה)"),
+                (COLOR_LAVENDER, "דלג — כרטיס מסומן כ-Saved ב-WellyBox (לא חדש)"),
+                (COLOR_GREY,     "דלג (סוג/תאריך לא תואם, אין קישור)"),
+                (COLOR_ORANGE,   "שגיאה"),
+            ], 1):
+                lg.cell(row=i, column=1).fill = PatternFill("solid", fgColor=color)
+                lg.cell(row=i, column=2, value=desc)
+
+            # Column widths
+            for sheet in [ws, lg]:
+                for col in sheet.columns:
+                    w = max((len(str(c.value or "")) for c in col), default=0)
+                    sheet.column_dimensions[get_column_letter(col[0].column)].width = min(w + 4, 55)
+
+            xls_path = rep_dir / f'דו״ח הורדות {ts}.xlsx'
+            try:
+                wb.save(xls_path)
+                self._emit(f'דו"ח הורדות → {xls_path}')
+            except PermissionError:
+                self._emit(
+                    f'[שגיאה] לא ניתן לשמור את הדו"ח — סגור את הקובץ {xls_path.name} ב-Excel ונסה שנית',
+                    "ERROR",
+                )
+        except Exception as xls_exc:
+            self._emit(f'[WARN] לא ניתן ליצור קובץ Excel: {xls_exc}', "WARN")
 
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
