@@ -562,8 +562,18 @@ class Bot:
         if not submitted:
             pass_el.send_keys(Keys.RETURN)
 
-        # Wait for dashboard
+        # Wait for dashboard — handle new tab/window opening after login
         self._emit("ממתין לכניסה…")
+        time.sleep(3)
+
+        # If login opened a new window/tab, switch to it
+        handles = self.driver.window_handles
+        if len(handles) > 1:
+            self.driver.switch_to.window(handles[-1])
+            self._emit(f"  עבר לחלון {handles[-1]}")
+        elif len(handles) == 1:
+            self.driver.switch_to.window(handles[0])
+
         try:
             self._w(WAIT_L).until(EC.any_of(
                 EC.url_contains("dashboard"),
@@ -574,7 +584,24 @@ class Bot:
                 ),
             ))
             self._emit("✓ מחובר")
-        except TimeoutException:
+        except (TimeoutException, NoSuchWindowException):
+            # Try switching to any surviving window and check again
+            try:
+                surviving = self.driver.window_handles
+                if surviving:
+                    self.driver.switch_to.window(surviving[0])
+                    self._w(WAIT_L).until(EC.any_of(
+                        EC.url_contains("dashboard"),
+                        EC.url_contains("receipts"),
+                        EC.url_contains("ng2ux"),
+                        EC.presence_of_element_located(
+                            (By.XPATH, "//*[contains(.,'כל החשבוניות')]")
+                        ),
+                    ))
+                    self._emit("✓ מחובר (חלון חלופי)")
+                    return
+            except Exception:
+                pass
             self._shot("login_fail")
             raise RuntimeError("כניסה נכשלה — בדוק פרטי כניסה")
         time.sleep(2)
