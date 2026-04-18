@@ -307,6 +307,18 @@ def fmt_date_il(dt: datetime) -> str:
 def safe_name(s: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', '', s).strip()
 
+def vendor_word(vendor: str) -> str:
+    """Return the first full (non-abbreviation) word from the vendor name.
+    Skips words that are abbreviations like 'א.' or 'ד.ר.' (letter(s) + dot patterns)."""
+    for word in vendor.split():
+        # Skip abbreviation patterns: start with a letter followed by a dot (e.g. "א.", "ד.ר.")
+        if re.match(r'^[א-תa-zA-Z]\.', word):
+            continue
+        if word:
+            return word
+    # Fallback: return first word regardless
+    return vendor.split()[0] if vendor.split() else vendor
+
 def _join_note(existing: str, addition: str) -> str:
     """Append addition to existing note, separated by ' | '."""
     return f"{existing} | {addition}" if existing else addition
@@ -747,7 +759,11 @@ class Bot:
                 self.results.append(result)
                 continue
 
-            base_name = f"{vendor} {date_str}"
+            vendor_w       = vendor_word(vendor)
+            doc_num_digits = re.sub(r'\D', '', doc_num)
+            last3          = doc_num_digits[-3:] if doc_num_digits else ''
+            base_name = (f"{vendor_w} {stage_name} {last3} {date_str}"
+                         if last3 else f"{vendor_w} {stage_name} {date_str}")
             filename  = f"{base_name}.pdf"
             dest_path = dest_folder / filename
 
@@ -776,11 +792,8 @@ class Bot:
                     result.note     = _join_note(result.note, 'קובץ זהה')
                     self.results.append(result)
                     continue
-                # Different content — use doc_num as disambiguator, fall back to counter
+                # Different content — append a counter to disambiguate
                 original_name = filename
-                if doc_num:
-                    filename  = f"{base_name} מס{doc_num}.pdf"
-                    dest_path = dest_folder / filename
                 counter = 2
                 while dest_path.exists():
                     filename  = f"{base_name} ({counter}).pdf"
