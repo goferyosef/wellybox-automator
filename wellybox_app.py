@@ -1012,26 +1012,36 @@ class Bot:
                     c = ws.cell(row=row, column=col, value=v)
                     c.fill = fill
 
-            # Legend
-            lg = wb.create_sheet("Legend")
-            for i, (color, desc) in enumerate([
-                (COLOR_GREEN,    "הורד לתיקיית חשבוניות לקליטה"),
-                (COLOR_RED,      "קובץ זהה קיים בחשבוניות לקליטה — דלג"),
-                (COLOR_BLUE,     "הורד לתיקיית קבלות"),
-                (COLOR_YELLOW,   "קובץ זהה קיים בקבלות — דלג"),
-                (COLOR_YELLOW,   "התנגשות שמות — קבצים שונים, הורד עם מזהה מסמך (חשבונית/קבלה)"),
-                (COLOR_LAVENDER, "דלג — כרטיס מסומן כ-Saved ב-WellyBox (לא חדש)"),
-                (COLOR_GREY,     "דלג (סוג/תאריך לא תואם, אין קישור)"),
-                (COLOR_ORANGE,   "שגיאה"),
-            ], 1):
-                lg.cell(row=i, column=1).fill = PatternFill("solid", fgColor=color)
-                lg.cell(row=i, column=2, value=desc)
+            # Legend — same sheet, two rows below last data row
+            legend_start = ws.max_row + 2
+            title_cell = ws.cell(row=legend_start, column=1, value="מקרא צבעי שורות:")
+            title_cell.font = Font(bold=True, color="000000")
+
+            legend_entries = [
+                (COLOR_GREEN,    "הורד — חשבונית",           "הורד לתיקיית חשבוניות לקליטה"),
+                (COLOR_RED,      "כפול — דלג (חשבונית)",     "קובץ זהה קיים בחשבוניות לקליטה — דלג"),
+                (COLOR_BLUE,     "הורד — קבלה",              "הורד לתיקיית קבלות"),
+                (COLOR_YELLOW,   "כפול / התנגשות — דלג/הורד עם מזהה", "קובץ זהה קיים בקבלות — דלג / קבצים שונים — הורד עם מזהה"),
+                (COLOR_LAVENDER, "דלג — Saved ב-WellyBox",   "כרטיס מסומן כ-Saved ב-WellyBox (לא חדש)"),
+                (COLOR_GREY,     "דלג",                      "דלג (סוג/תאריך לא תואם, אין קישור)"),
+                (COLOR_ORANGE,   "שגיאה",                    "שגיאה בהורדה או בשמירה"),
+            ]
+
+            for offset, (color, label, desc) in enumerate(legend_entries, 1):
+                r = legend_start + offset
+                swatch = ws.cell(row=r, column=1)
+                swatch.fill = PatternFill("solid", fgColor=color)
+
+                label_cell = ws.cell(row=r, column=2, value=label)
+                label_cell.fill = PatternFill("solid", fgColor=color)
+                label_cell.font = Font(bold=True)
+
+                ws.cell(row=r, column=3, value=desc)
 
             # Column widths
-            for sheet in [ws, lg]:
-                for col in sheet.columns:
-                    w = max((len(str(c.value or "")) for c in col), default=0)
-                    sheet.column_dimensions[get_column_letter(col[0].column)].width = min(w + 4, 55)
+            for col in ws.columns:
+                w = max((len(str(c.value or "")) for c in col), default=0)
+                ws.column_dimensions[get_column_letter(col[0].column)].width = min(w + 4, 55)
 
             xls_path = rep_dir / f'דו״ח הורדות {ts}.xlsx'
             try:
